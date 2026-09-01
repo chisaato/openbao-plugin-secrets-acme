@@ -63,7 +63,7 @@
 - 创建/更新时：用调用者 token **试读一次** KV 校验引用有效（fail fast），**不快照内容**
 - 删除时：校验无 account 引用，否则拒绝
 
-### 4.2 `accounts/{name}`（CRUD + LIST + rollover）
+### 4.2 `accounts/{name}`（CRUD + LIST + rollover + key 导出）
 
 | 字段 | 类型 | 约束 |
 |---|---|---|
@@ -79,6 +79,7 @@
 - **修改 `server_url`**：同一把 key 在新 CA 重新 `Register`（LE staging/production 账户按环境隔离，协议与 LE 均允许；配 `ResolveAccountByKey` 做幂等）。更新时立即执行，失败则拒绝修改
 - **删除**：调用 lego 账户注销 API（`Registration.DeactivateAccount`，实现时以 lego v5 实际方法名为准）后删除存储
 - **`POST accounts/{name}/rollover`**：body `{key_type}` → 生成新私钥 → `Registration.KeyRollover(ctx, newKey)` → 更新存储中私钥与 `key_type`
+- **`GET accounts/{name}/key`**：导出账户私钥（PEM PKCS8），响应 `data`: `{private_key, key_type}`。不做额外限制（用户明确要求开放此行为；文档注明：持有此 key 即持有该 ACME 账户身份，路径 ACL 建议仅限管理员）
 
 ### 4.3 `roles/{name}`（CRUD + LIST）
 
