@@ -32,7 +32,7 @@ var registry = map[string]providerBuilder{
 // envNames 是各 provider 认识的全部键名（凭据映射 keys 的合法左值）。
 var envNames = map[string][]string{
 	"cloudflare":   {"CLOUDFLARE_EMAIL", "CLOUDFLARE_API_KEY", "CLOUDFLARE_DNS_API_TOKEN", "CLOUDFLARE_ZONE_API_TOKEN"},
-	"alidns":       {"ALICLOUD_ACCESS_KEY", "ALICLOUD_SECRET_KEY", "ALICLOUD_SECURITY_TOKEN", "ALICLOUD_REGION_ID"},
+	"alidns":       {"ALICLOUD_ACCESS_KEY", "ALICLOUD_RAM_ROLE", "ALICLOUD_REGION_ID", "ALICLOUD_SECRET_KEY", "ALICLOUD_SECURITY_TOKEN"},
 	"tencentcloud": {"TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY", "TENCENTCLOUD_REGION", "TENCENTCLOUD_SESSION_TOKEN"},
 }
 
@@ -104,6 +104,9 @@ func alidnsConfig(env map[string]string) (*alidns.Config, error) {
 	if v, ok := env["ALICLOUD_ACCESS_KEY"]; ok {
 		cfg.APIKey = v
 	}
+	if v, ok := env["ALICLOUD_RAM_ROLE"]; ok {
+		cfg.RAMRole = v
+	}
 	if v, ok := env["ALICLOUD_SECRET_KEY"]; ok {
 		cfg.SecretKey = v
 	}
@@ -113,7 +116,8 @@ func alidnsConfig(env map[string]string) (*alidns.Config, error) {
 	if v, ok := env["ALICLOUD_REGION_ID"]; ok {
 		cfg.RegionID = v
 	}
-	if cfg.APIKey == "" || cfg.SecretKey == "" {
+	// RAMRole（ECS 实例 RAM 角色）是免 AK/SK 的独立认证路径，存在时豁免 APIKey+SecretKey 要求。
+	if cfg.RAMRole == "" && (cfg.APIKey == "" || cfg.SecretKey == "") {
 		return nil, fmt.Errorf("alidns: 需要 ALICLOUD_ACCESS_KEY+ALICLOUD_SECRET_KEY（可用键：%s）",
 			strings.Join(envNames["alidns"], ", "))
 	}

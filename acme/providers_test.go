@@ -38,6 +38,26 @@ func TestAliDNSConfig(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestAliDNSConfigRAMRole(t *testing.T) {
+	cfg, err := alidnsConfig(map[string]string{
+		"ALICLOUD_ACCESS_KEY": "ak", "ALICLOUD_RAM_ROLE": "role",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ak", cfg.APIKey)
+	require.Equal(t, "role", cfg.RAMRole)
+
+	// 仅 RAMRole：免 AK/SK 的独立认证路径（ECS 实例 RAM 角色），构造应通过。
+	cfg, err = alidnsConfig(map[string]string{"ALICLOUD_RAM_ROLE": "role"})
+	require.NoError(t, err)
+	require.Equal(t, "role", cfg.RAMRole)
+	_, err = newProvider(t.Context(), "alidns", providerOpts{}, map[string]string{"ALICLOUD_RAM_ROLE": "role"})
+	require.NoError(t, err)
+
+	// 全缺仍报错。
+	_, err = alidnsConfig(map[string]string{})
+	require.Error(t, err)
+}
+
 func TestTencentCloudConfig(t *testing.T) {
 	cfg, err := tencentcloudConfig(map[string]string{
 		"TENCENTCLOUD_SECRET_ID": "id", "TENCENTCLOUD_SECRET_KEY": "key",
