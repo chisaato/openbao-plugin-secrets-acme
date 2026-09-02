@@ -1,0 +1,30 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      # challtestsrv 已从 pebble v2 主模块拆出：必须用 v2 子路径安装；
+      # 固定 v2.10.1 保证 challtestsrv 管理 API（/set-txt、/clear-txt）与
+      # 验收测试 fixture 一致。pebble 本体仍可跟随 @latest。
+      - run: go install github.com/letsencrypt/pebble/v2/cmd/pebble@latest
+      - run: go install github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.10.1
+      - name: Install bao
+        run: |
+          curl -sL https://github.com/openbao/openbao/releases/latest/download/openbao_linux_amd64.zip -o bao.zip
+          unzip -o bao.zip bao && sudo mv bao /usr/local/bin/
+      - run: go vet ./...
+      - run: make test
+      # make testacc 自身在 test/ 独立 module 内运行（见 Makefile），勿重复 cd。
+      - run: chmod +x test/acme-dns.sh && make build && make testacc
