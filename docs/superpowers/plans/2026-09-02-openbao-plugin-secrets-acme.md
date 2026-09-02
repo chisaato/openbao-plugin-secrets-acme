@@ -1103,7 +1103,8 @@ func mustJSON(t *testing.T, v interface{}) []byte {
 func testBackend(t *testing.T, loader CredentialLoader) (*backend, logical.Storage) {
 	t.Helper()
 	conf := logical.TestBackendConfig()
-	conf.RunningVersion = "v0.1.0"
+	// 注：logical.BackendConfig 无 RunningVersion 字段（controller ruling），
+	// 版本自报经 acme.Version 包级变量接线，见 Task 1 fix round 1。
 	b, err := Backend(conf)
 	require.NoError(t, err)
 	if err := b.Setup(context.Background(), conf); err != nil {
