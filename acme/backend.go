@@ -44,7 +44,8 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 
 // paths 聚合全部路径；后续任务向此追加。
 func paths(b *backend) []*framework.Path {
-	return append(pathDNSProviders(b), pathAccounts(b)...)
+	paths := append(pathDNSProviders(b), pathAccounts(b)...)
+	return append(paths, pathRoles(b)...)
 }
 
 // backend 持有框架后端与签发链路依赖。
