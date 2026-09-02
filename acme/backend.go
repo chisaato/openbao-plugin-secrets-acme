@@ -50,19 +50,7 @@ type backend struct {
 	cacheMu    sync.RWMutex
 }
 
-// —— 临时桩：Task 3 / Task 10 移入正式文件并实现 ——
-type credentialsRef struct{}
-
-type CredentialLoader interface {
-	Load(ctx context.Context, clientToken string, ref credentialsRef) (map[string]string, error)
-}
-
-type apiCredentialLoader struct{}
-
-func (a *apiCredentialLoader) Load(ctx context.Context, clientToken string, ref credentialsRef) (map[string]string, error) {
-	return map[string]string{}, nil
-}
-
+// —— 临时桩：Task 10 移入正式文件并实现 ——
 type KVOutputWriter interface {
 	Write(ctx context.Context, clientToken, mount, path string, data map[string]interface{}) error
 }
