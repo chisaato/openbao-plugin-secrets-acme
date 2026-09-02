@@ -238,3 +238,13 @@ var registry = map[string]builder{
 - lego：https://go-acme.github.io/lego/usage/library/ ；v5 迁移 https://github.com/go-acme/lego/blob/main/docs/content/migration/library.md
 - RFC 8555（§7.3.5 account key rollover）
 - cert-manager solver picker：`pkg/util/solverpicker/solverpicker.go`（路由语义来源）
+
+## 13. 实现演进记录（v1）
+
+实现过程中相对本设计的已裁决偏差与增量（供后续版本回溯）：
+
+1. **凭据/KV 读写身份改为插件服务身份**：设计阶段的「调用者 ClientToken」不可行——core 传给插件的 ClientToken 是 salted+hashed 值，不能用作 API 访问身份。实现改为插件进程 env 注入 `BAO_TOKEN`（专用服务身份 token），凭据实时读取（`credentials.go`）与证书 KV 输出（`kvoutput.go`）均以该身份发起；调用者无需任何 KV 权限（见 README §3/§6）。
+2. **DNS provider 白名单 3→4**：在 cloudflare/alidns/tencentcloud 之外新增 `exec`（lego exec provider 适配），作为任意 DNS 商/私有 DNS/测试环境的兜底（见 README §8）。
+3. **`server_url` 允许修改 + 新增 rollover/key 导出端点**：同 key 修改 `server_url` 时在新 CA 幂等回退注册（`ResolveAccountByKey` 失败则重新 `Register`）；新增 `accounts/{name}/rollover`（账户密钥轮换，`key_type` 本体创建后不可改）与 `accounts/{name}/key`（账户私钥导出，建议仅管理员可读）。
+4. **dns-provider 新增传播控制字段**：`skip_propagation_check`（跳过 lego DNS 传播预检）与 `propagation_wait`（跳过后固定等待秒数）；预检策略在签发请求级聚合——任一引用条目要求跳过即整体跳过（见 README §4.2）。
+5. **缓存命中不重写 KV**（本次评审修复落地）：命中路径纯读，`output_path` 指向签发时写入的既有数据；签发/重签路径行为不变（spec §7 原文即此语义，实现曾短暂偏离，已回归）。

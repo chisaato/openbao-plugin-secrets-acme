@@ -22,8 +22,19 @@ func TestAccountsLifecycle(t *testing.T) {
 	b, storage := testBackend(t, NewFakeCredentialLoader(nil))
 	ctx := context.Background()
 
-	// 创建（Register 到 pebble）
+	// 创建未同意 ToS → 报错（spec §4.2：注册必须显式同意，ACME 语义要求）
+	bad := accountData(env.DirURL)
+	bad["terms_of_service_agreed"] = false
 	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "accounts/le",
+		Storage: storage, Data: bad,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "terms_of_service_agreed 必须为 true")
+
+	// 创建（Register 到 pebble）
+	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.CreateOperation, Path: "accounts/le",
 		Storage: storage, Data: accountData(env.DirURL),
 	})

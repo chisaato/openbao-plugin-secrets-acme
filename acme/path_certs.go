@@ -122,7 +122,7 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 			if err != nil {
 				return nil, err
 			}
-			resp, err := b.respondWithCert(ctx, req, roleName, role, entry, key)
+			resp, err := b.respondWithCert(ctx, req, roleName, role, entry, key, false)
 			if err != nil {
 				// 与新鲜签发路径一致：包装为错误响应（而非裸 error）。
 				return logical.ErrorResponse("签发失败: %v", err), nil
@@ -209,26 +209,46 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 		CertificatePEM:       string(res.Certificate),
 		IssuerCertificatePEM: string(res.IssuerCertificate),
 	}
-	if err := b.cachePut(ctx, req.Storage, key, entry); err != nil {
-		return nil, err
+	if !role.DisableCache {
+		// disable_cache：纯直通不落缓存（也无引用计数）——否则同 key 二次
+		// 签发会以 Users=1 覆写已有条目，破坏 Users==lease 数不变式：首个
+		// lease 撤销即归零误删条目，并向 ACME 真撤销兄弟 lease 仍在用的证书。
+		// （I-1）
+		if err := b.cachePut(ctx, req.Storage, key, entry); err != nil {
+			return nil, err
+		}
 	}
-	return b.respondWithCert(ctx, req, roleName, role, entry, key)
+	return b.respondWithCert(ctx, req, roleName, role, entry, key, true)
 }
 
-// respondWithCert：KV 输出（未配置则 no-op）+ 组装响应（含证书有效期）+
-// MaxTTL=证书剩余寿命。新鲜签发与缓存命中共用：KV 输出失败时删除缓存条目
-// 后报错，调用者重试走完整重签。
-func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, entry *cacheEntry, key string) (*logical.Response, error) {
-	kvPath, err := b.writeCertOutput(ctx, req, roleName, role, entry.CN, entry)
-	if err != nil {
-		// 不变式：签发成功+KV 成功 = Users=1 = lease 数。KV 失败时响应无
-		// Secret、core 不会建 lease，残留条目（Users≥1）将无人释放成为孤儿
-		// 引用（重试命中路径还会继续 +1）。整条删除后重试完整重签，代价是
-		// 多一次 ACME Obtain，可接受。
-		if delErr := b.cacheDelete(ctx, req.Storage, key); delErr != nil {
-			return nil, fmt.Errorf("KV 输出失败: %w（且缓存清理失败: %v）", err, delErr)
+// respondWithCert：组装响应（含证书有效期）+ MaxTTL=证书剩余寿命。
+// freshIssue=true（新鲜签发路径）：先写 KV 输出（未配置则 no-op），失败时
+// 删除缓存条目后报错，调用者重试走完整重签。
+// freshIssue=false（缓存命中路径）：纯读不写 KV（spec §7「缓存命中不重写」
+// ——命中重写会膨胀 KVv2 历史，且 KV 故障时会误删 Users≥2 的共享条目，KV
+// 持续故障期间还会反复触发完整 ACME Obtain 暴露限流）；output_path 指向
+// 签发时写入的既有数据。
+func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, entry *cacheEntry, key string, freshIssue bool) (*logical.Response, error) {
+	kvPath := ""
+	if freshIssue {
+		var err error
+		kvPath, err = b.writeCertOutput(ctx, req, roleName, role, entry.CN, entry)
+		if err != nil {
+			// 不变式：签发成功+KV 成功 = Users=1 = lease 数。KV 失败时响应无
+			// Secret、core 不会建 lease，残留条目（Users≥1）将无人释放成为孤儿
+			// 引用（重试命中路径还会继续 +1）。整条删除后重试完整重签，代价是
+			// 多一次 ACME Obtain，可接受。disable_cache 角色本就无条目（I-1），
+			// 先确认存在再删除，miss 时跳过。
+			if existing, gerr := b.cacheGet(ctx, req.Storage, key); gerr == nil && existing != nil {
+				if delErr := b.cacheDelete(ctx, req.Storage, key); delErr != nil {
+					return nil, fmt.Errorf("KV 输出失败: %w（且缓存清理失败: %v）", err, delErr)
+				}
+			}
+			return nil, fmt.Errorf("KV 输出失败: %w", err)
 		}
-		return nil, fmt.Errorf("KV 输出失败: %w", err)
+	} else if role.OutputKVMount != "" {
+		// 命中路径不重写 KV：output_path 指向签发时已写入的既有数据。
+		kvPath = outputKVPath(roleName, entry.CN)
 	}
 	notBefore, notAfter := certValidity(entry.CertificatePEM)
 	resp := b.issueResponse(entry, key, role.Account, roleName, kvPath)

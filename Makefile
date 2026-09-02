@@ -1,6 +1,8 @@
 GO ?= go
 PLUGIN_NAME = openbao-plugin-secrets-acme
-VERSION = v0.1.0
+# 动态取最近 tag（release 由 tag 触发天然命中）；无 tag 回退 v0.1.0 保持可构建；
+# ?= 允许外部覆盖（make VERSION=v0.2.0-rc1 release）。（I-3）
+VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0)
 
 .PHONY: build test testacc vet fmt clean release
 
@@ -35,4 +37,7 @@ release: build
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -ldflags "-X github.com/chisaato/openbao-plugin-secrets-acme/acme.Version=$(VERSION)" \
 			-o dist/$(PLUGIN_NAME)_$${os}_$${arch} ./cmd/plugin || exit 1; \
 	done
+	# 先清除上次运行的 SHA256SUMS：sha256sum * 会把旧清单卷入本次校验和，
+	# 造成重跑污染。（L104）
+	rm -f dist/SHA256SUMS
 	cd dist && sha256sum * > SHA256SUMS

@@ -134,6 +134,8 @@ bao write acme/accounts/prod \
 
 `dns_providers` 的 `zones` 用于路由：签发时按域名后缀匹配（zone 段数多者优先，平局按列表顺序），**`zones` 为空的条目是兜底路由**；域名无任何匹配时报错。
 
+> **`insecure_tls` 风险注记**：开启后关闭 ACME 全流程（注册/签发/撤销）的 TLS 证书校验，**仅限 pebble 等自签/私有 CA 测试环境**；生产 CA 必须保持默认关闭。
+
 辅助端点：
 
 - `bao write acme/accounts/prod/rollover key_type=RSA2048` —— 账户密钥轮换（`key_type` 本体创建后不可改，换钥必须走 rollover）
@@ -162,7 +164,7 @@ bao write acme/roles/web \
 bao write -field=certificate acme/certs/web common_name=www.example.com
 ```
 
-响应字段：`certificate`（PEM bundle）、`private_key`、`issuer_cert`、`common_name`、`domains`、`url`、`cert_stable_url`、`not_before`、`not_after`，以及配置了 KV 输出时的 `output_path`。响应是一个 renewable lease（TTL 上限为证书剩余寿命）。
+响应字段：`certificate`（PEM bundle）、`private_key`、`issuer_cert`、`common_name`、`domains`、`url`、`cert_stable_url`、`not_before`、`not_after`，以及配置了 KV 输出时的 `output_path`（**缓存命中不重写 KV**，`output_path` 指向签发时写入的数据）。响应是一个 renewable lease（TTL 上限为证书剩余寿命）。
 
 ## 5. 凭据模型
 
@@ -215,6 +217,8 @@ path "acme/certs/*" {
 ### exec provider 兜底
 
 任意未被白名单覆盖的 DNS 商、私有 DNS 或测试环境，可用 `exec` provider：外部脚本负责真实 DNS 写/清。
+
+> **风险注记**：`EXEC_PATH` 指定的程序会以**插件进程的用户身份执行任意程序**，且凭据 KV 数据会传入子进程环境——属 **admin 级配置**，`EXEC_PATH` 与其凭据 KV 路径的写权限必须仅限管理员。
 
 ```sh
 bao write acme/dns-providers/mydns-exec \

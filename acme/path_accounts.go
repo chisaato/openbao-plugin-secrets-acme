@@ -140,6 +140,11 @@ func (b *backend) pathAccountWrite(ctx context.Context, req *logical.Request, d 
 	if v, ok := d.GetOk("terms_of_service_agreed"); ok {
 		entry.TOSAgreed = v.(bool)
 	}
+	// spec §4.2：创建（注册）必须显式同意 ToS，否则 ACME Register 语义不成立；
+	// 更新路径不强制（注册时已同意，与 ACME 语义一致）。（M-1）
+	if existing == nil && !entry.TOSAgreed {
+		return logical.ErrorResponse("terms_of_service_agreed 必须为 true"), nil
+	}
 	if v, ok := d.GetOk("insecure_tls"); ok {
 		entry.InsecureTLS = v.(bool)
 	}

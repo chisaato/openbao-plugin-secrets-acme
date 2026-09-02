@@ -453,7 +453,12 @@ func TestAcceptanceFullPipeline(t *testing.T) {
 	require.NotNil(t, issue2)
 	require.Equal(t, issue1.Data["url"], issue2.Data["url"], "二次签发应命中缓存（同 cert url）")
 	require.Equal(t, certPEM1, issue2.Data["certificate"])
-	require.NotEmpty(t, issue2.Data["output_path"])
+	// 命中路径纯读不写 KV，但 output_path 仍指向签发时写入的既有数据。
+	require.Equal(t, outputPath, issue2.Data["output_path"])
+	// I-2：缓存命中不得产生 KV 新版本（签发时 version 1，命中后仍只有 1 版）。
+	meta, err := client.KVv2("secret").GetMetadata(ctx, "certs/web/example.com")
+	require.NoError(t, err, "读取 KV metadata 失败")
+	require.Len(t, meta.Versions, 1, "缓存命中不得重写 KV（版本数应保持 1）")
 
 	// ---- 双 lease 撤销：第一个撤销后 pebble 仍 valid（refcount=1），第二个后 revoked ----
 	leases, err := client.Logical().List("sys/leases/lookup/acme/certs/web")

@@ -170,20 +170,81 @@ func issueRequest(ctx context.Context, storage logical.Storage) *logical.Request
 	}
 }
 
+// TestDisableCacheRoleSkipsCachePut（I-1）：disable_cache role 的签发必须
+// 纯直通——不落缓存（也无引用计数）。否则同 key 二次签发会以 Users=1 覆写
+// 已有条目，破坏 Users==lease 数不变式：首个 lease 撤销即归零误删条目，并向
+// ACME 真撤销第二个 lease 仍在用的证书。撤销阶段对不存在的条目必须优雅返回
+// （不触发删除/真撤销；真撤销断言由验收测试 e2e 兜底）。
+func TestDisableCacheRoleSkipsCachePut(t *testing.T) {
+	b, storage, _ := setupObtainable(t)
+	ctx := context.Background()
+
+	// role 开启 disable_cache（其余字段保留）
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "roles/web",
+		Storage: storage, ClientToken: "test-token",
+		Data: map[string]interface{}{
+			"account":            "le",
+			"allowed_domains":    "example.com",
+			"allow_bare_domains": true,
+			"allow_subdomains":   true,
+			"disable_cache":      true,
+		},
+	})
+	require.NoError(t, err)
+
+	role, err := b.getRole(ctx, storage, "web")
+	require.NoError(t, err)
+	key := cacheKey(role, []string{"example.com"})
+
+	issue := func(stage string) {
+		resp, err := b.HandleRequest(ctx, &logical.Request{
+			Operation: logical.CreateOperation, Path: "certs/web",
+			Storage: storage, ClientToken: "test-token",
+			Data: map[string]interface{}{"common_name": "example.com"},
+		})
+		require.NoError(t, err)
+		require.False(t, resp.IsError(), "%s 应成功: %v", stage, resp)
+		entry, err := b.cacheGet(ctx, storage, key)
+		require.NoError(t, err)
+		require.Nil(t, entry, "%s 后缓存不得有条目", stage)
+	}
+
+	issue("首次签发")
+	issue("二次签发")
+
+	// 撤销第一个 lease：条目不存在 → 优雅返回，缓存依然为空
+	resp, err := b.certRevoke(ctx, leaseReq(storage, key), nil)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	entry, err := b.cacheGet(ctx, storage, key)
+	require.NoError(t, err)
+	require.Nil(t, entry, "撤销后缓存依然不得有条目")
+}
+
 // TestIssueCacheHitResponse 验证缓存命中成功路径的响应契约：
-// not_before/not_after 必须存在且为可解析的 RFC3339 字符串（与 KV 输出语义一致）。
+// not_before/not_after 必须存在且为可解析的 RFC3339 字符串（与 KV 输出语义
+// 一致）；命中纯读不写 KV（I-2/spec §7），output_path 指向签发时写入的数据。
 func TestIssueCacheHitResponse(t *testing.T) {
 	b, storage := testBackend(t, NewFakeCredentialLoader(nil))
 	ctx := context.Background()
 
 	role := &roleEntry{Account: "le", AllowedDomains: []string{"example.com"},
-		AllowBareDomains: true, CacheForRatio: 70}
+		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "kv-certs"}
 	putRoleFixture(t, ctx, storage, role)
 	key := putFreshCacheEntry(t, b, ctx, storage, role, []string{"example.com"})
+
+	w := &recordingKVWriter{}
+	b.kvWriter = w
 
 	resp, err := b.HandleRequest(ctx, issueRequest(ctx, storage))
 	require.NoError(t, err)
 	require.False(t, resp.IsError(), "缓存命中应成功: %v", resp)
+
+	// I-2：命中路径纯读——不得产生任何 KV 写（否则 KVv2 历史膨胀）。
+	require.Empty(t, w.writes, "缓存命中不得重写 KV")
+	require.Equal(t, "certs/web/example.com", resp.Data["output_path"],
+		"output_path 应指向签发时写入的既有数据")
 
 	// not_before/not_after：存在、RFC3339 可解析、等于夹具证书有效期
 	nb, ok := resp.Data["not_before"].(string)
@@ -258,7 +319,10 @@ func (w *failingKVWriter) Write(ctx context.Context, clientToken, mount, path st
 	return w.err
 }
 
-func TestIssueKVFailureDropsCacheEntry(t *testing.T) {
+// TestCacheHitPureReadNoKVWrite（I-2）：缓存命中纯读——即便 KV writer 故障，
+// 命中也必须成功且不得删除共享条目（否则 Users≥2 的在用引用被孤立；KV 持续
+// 故障期间每次重试也不会退化为完整 ACME Obtain）。
+func TestCacheHitPureReadNoKVWrite(t *testing.T) {
 	b, storage := testBackend(t, NewFakeCredentialLoader(nil))
 	ctx := context.Background()
 
@@ -269,9 +333,48 @@ func TestIssueKVFailureDropsCacheEntry(t *testing.T) {
 
 	b.kvWriter = &failingKVWriter{err: errors.New("kv unavailable")}
 
-	// 缓存命中路径：KV 输出失败 → 报错，且整条缓存条目被删除
-	// （错误响应无 Secret、core 不建 lease，残留条目即无人释放的孤儿引用）。
 	resp, err := b.HandleRequest(ctx, issueRequest(ctx, storage))
+	require.NoError(t, err)
+	require.False(t, resp.IsError(), "命中路径不应因 KV 故障失败: %v", resp)
+	require.Equal(t, "certs/web/example.com", resp.Data["output_path"])
+
+	entry, err := b.cacheGet(ctx, storage, key)
+	require.NoError(t, err)
+	require.NotNil(t, entry, "命中路径不得删除共享条目")
+	require.Equal(t, 2, entry.Users)
+}
+
+// TestIssueKVFailureDropsCacheEntry：签发路径（真实 Obtain）KV 输出失败 →
+// 报错且整条删除缓存条目（错误响应无 Secret、core 不建 lease，残留条目即
+// 无人释放的孤儿引用）。
+func TestIssueKVFailureDropsCacheEntry(t *testing.T) {
+	b, storage, _ := setupObtainable(t)
+	ctx := context.Background()
+
+	// role 补配 output_kv_mount
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "roles/web",
+		Storage: storage, ClientToken: "test-token",
+		Data: map[string]interface{}{
+			"account":            "le",
+			"allowed_domains":    "example.com",
+			"allow_bare_domains": true,
+			"allow_subdomains":   true,
+			"output_kv_mount":    "kv-certs",
+		},
+	})
+	require.NoError(t, err)
+	role, err := b.getRole(ctx, storage, "web")
+	require.NoError(t, err)
+	key := cacheKey(role, []string{"example.com"})
+
+	b.kvWriter = &failingKVWriter{err: errors.New("kv unavailable")}
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/web",
+		Storage: storage, ClientToken: "test-token",
+		Data: map[string]interface{}{"common_name": "example.com"},
+	})
 	require.NoError(t, err)
 	require.True(t, resp.IsError())
 	require.Contains(t, resp.Error().Error(), "KV 输出失败")
