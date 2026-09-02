@@ -9,12 +9,13 @@ import (
 
 // credentialsRef 描述一处 KV 凭据引用。Keys 左键为适配层所需的 lego
 // 环境变量名，右值为用户 KV 数据中的实际键名；缺省时回退同名查找。
+// mapstructure tag 供路径层 FieldData(map) WeakDecode 使用（如 kv_version）。
 type credentialsRef struct {
-	Mount     string            `json:"mount"`
-	Path      string            `json:"path"`
-	KVVersion string            `json:"kv_version"`
-	Version   int               `json:"version"`
-	Keys      map[string]string `json:"keys"`
+	Mount     string            `json:"mount" mapstructure:"mount"`
+	Path      string            `json:"path" mapstructure:"path"`
+	KVVersion string            `json:"kv_version" mapstructure:"kv_version"`
+	Version   int               `json:"version" mapstructure:"version"`
+	Keys      map[string]string `json:"keys" mapstructure:"keys"`
 }
 
 func (r *credentialsRef) kvVersion() string {

@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/go-acme/lego/v5 v5.4.1
+	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/openbao/openbao/api/v2 v2.6.0
 	github.com/openbao/openbao/sdk/v2 v2.6.2
 	github.com/stretchr/testify v1.12.1
@@ -26,7 +27,6 @@ require (
 	github.com/go-acme/alidns-20150109/v5 v5.6.1 // indirect
 	github.com/go-acme/tencentclouddnspod v1.3.131 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
-	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect

@@ -38,6 +38,7 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 		kvWriter:   &apiKVWriter{},
 	}
 	b.RunningVersion = Version
+	b.Paths = pathDNSProviders(b)
 	return b, nil
 }
 
