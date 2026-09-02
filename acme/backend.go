@@ -56,14 +56,3 @@ type backend struct {
 	issueGroup singleflight.Group
 	cacheMu    sync.RWMutex
 }
-
-// —— 临时桩：Task 10 移入正式文件并实现 ——
-type KVOutputWriter interface {
-	Write(ctx context.Context, clientToken, mount, path string, data map[string]interface{}) error
-}
-
-type apiKVWriter struct{}
-
-func (a *apiKVWriter) Write(ctx context.Context, clientToken, mount, path string, data map[string]interface{}) error {
-	return nil
-}
