@@ -10,6 +10,10 @@ import (
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
 
+// Version 由 Makefile ldflags 注入；发布时为 v 前缀 SemVer，Factory 将其设为
+// framework.Backend.RunningVersion 向 core 自报。
+var Version = "dev"
+
 // Factory 是 OpenBao 插件入口。
 func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend, error) {
 	b, err := Backend(conf)
@@ -33,6 +37,7 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 		credLoader: &apiCredentialLoader{},
 		kvWriter:   &apiKVWriter{},
 	}
+	b.RunningVersion = Version
 	return b, nil
 }
 

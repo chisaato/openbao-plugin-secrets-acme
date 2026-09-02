@@ -9,9 +9,8 @@ import (
 	"github.com/openbao/openbao/sdk/v2/plugin"
 )
 
-// pluginVersion 由 Makefile ldflags 注入；conf.RunningVersion 优先。
-var pluginVersion = "dev"
-
+// 版本自报经 acme.Version（由 Makefile ldflags 注入，v 前缀 SemVer），
+// 由 Factory 设置 framework.Backend.RunningVersion。
 func main() {
 	apiClientMeta := &api.PluginAPIClientMeta{}
 	flags := apiClientMeta.FlagSet()
