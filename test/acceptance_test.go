@@ -34,7 +34,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chisaato/openbao-plugin-secrets-acme/acme"
 	"github.com/miekg/dns"
 	api "github.com/openbao/openbao/api/v2"
 	"github.com/stretchr/testify/require"
@@ -350,7 +349,6 @@ func TestAcceptanceFullPipeline(t *testing.T) {
 		Type: pluginName,
 		Config: api.MountConfigInput{
 			PluginVersion: pluginVer,
-			Options:       map[string]string{"version": pluginVer},
 		},
 	}), "启用插件 mount 失败")
 	mounts, err := client.Sys().ListMounts()
@@ -358,9 +356,15 @@ func TestAcceptanceFullPipeline(t *testing.T) {
 	mo, ok := mounts["acme/"]
 	require.True(t, ok, "acme/ 未挂载")
 	require.Equal(t, pluginName, mo.Type)
-	if v := mo.Options["version"]; v != "" {
-		require.Equal(t, acme.Version, v, "mount 版本应与 ldflags 注入的 acme.Version 一致")
-	}
+	// 版本断言（MountOutput 直接暴露 plugin_version/running_plugin_version）：
+	// PluginVersion 是 mount 时声明的版本；RunningVersion 是插件进程自报的
+	// 运行版本（Factory 将 ldflags 注入的 acme.Version 设为 RunningVersion）
+	// ——两者都等于 v0.1.0 即验证了 make build 的 ldflags 注入链路。
+	// 注意：不要读 Options["version"]——server mount 后把 version option
+	// 提升为 plugin_version 并从 Options 移除（OpenBao 2.x 行为，实测确认）；
+	// 也不要比对 test module 里的 acme.Version——独立编译无 ldflags，恒 "dev"。
+	require.Equal(t, pluginVer, mo.PluginVersion, "mount 配置版本应与注册版本一致")
+	require.Equal(t, pluginVer, mo.RunningVersion, "插件自报运行版本应为 ldflags 注入的 v0.1.0")
 
 	// ---- 预置凭据 KV（全为本地假值；EXEC_MODE_TIMEOUT 照 brief 逐字保留，
 	// exec builder 不识别该键，resolveKeys 白名单外自动忽略）----
