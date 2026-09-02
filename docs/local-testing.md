@@ -12,6 +12,9 @@
 ## 快速开始
 
 ```bash
+# 0. 生成本地配置（bao-config.hcl 已被 gitignore，token 随便填不会被提交）
+cp bao-config.hcl.example bao-config.hcl
+
 # 1. 构建插件（linux 本机二进制，ldflags 注入版本 = git describe，当前 v0.1.0）
 make build
 
@@ -32,7 +35,7 @@ docker compose exec -T -e BAO_ADDR bao bao operator init -key-shares=1 -key-thre
 docker compose exec -T -e BAO_ADDR bao bao operator unseal <unseal key>
 
 # 7. 把 root token 填入 bao-config.hcl 的 plugin 块 BAO_TOKEN，然后重启并再次解封
-$EDITOR bao-config.hcl        # BAO_TOKEN=<root token> → 填入
+$EDITOR bao-config.hcl        # BAO_TOKEN=<root token> → 填入（本文件被 gitignore，不会被提交）
 docker compose restart bao
 docker compose exec -T -e BAO_ADDR bao bao operator unseal <unseal key>
 

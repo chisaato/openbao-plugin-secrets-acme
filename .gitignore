@@ -4,3 +4,5 @@ dist/
 
 # 本地 compose 测试数据（bao 存储 + 插件二进制副本），见 docs/local-testing.md
 data/
+# 本地 bao 配置含 root token，只留本地；模板见 bao-config.hcl.example
+bao-config.hcl

@@ -2,7 +2,7 @@
 services:
   bao:
     image: openbao/openbao:2.6.2
-    container_name: bao-acme-local
+    # container_name: bao-acme-local
     # 镜像默认 entrypoint 会切到 uid=100(openbao) 并以 config-dir 模式重复加载配置；
     # 本地测试直接以 root 运行 bao、显式指定配置文件，行为完全确定
     # （生产部署请用权限规范的用户/目录/存储，不要照抄这两行）。

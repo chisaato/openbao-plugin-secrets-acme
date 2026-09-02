@@ -1,8 +1,9 @@
-# OpenBao 本地测试配置（由 compose.yaml 挂载为 /openbao/config/config.hcl）。
-# 与生产部署同构：file 存储 + plugin_directory + 声明式插件块（含插件 env 注入）。
+# OpenBao 本地测试配置模板。使用：cp bao-config.hcl.example bao-config.hcl，
+# 然后按下方注释填充（bao-config.hcl 已被 .gitignore 忽略，token 放心填）。
+# 由 compose.yaml 挂载为 /openbao/bao-config.hcl。
 
-ui         = false
-api_addr   = "http://127.0.0.1:8200"
+ui           = true # 本地测试开着 UI（http://127.0.0.1:8200）方便查看
+api_addr     = "http://127.0.0.1:8200"
 cluster_addr = "https://127.0.0.1:8201" # raft 存储必需（单节点亦然）
 
 storage "raft" {
@@ -33,7 +34,7 @@ plugin_auto_register = true
 plugin "secret" "acme" {
   command   = "openbao-plugin-secrets-acme"
   version   = "v0.1.0"
-  sha256sum = "a893f9b519acf70af93438050a770cce7817a7c8cd7e1e16b6961ce503de94f9"
+  sha256sum = "<sha256 of bin/openbao-plugin-secrets-acme>"
   env = [
     "BAO_ADDR=http://127.0.0.1:8200",
     "BAO_TOKEN=<root token>",
