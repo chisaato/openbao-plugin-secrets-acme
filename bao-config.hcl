@@ -1,0 +1,41 @@
+# OpenBao 本地测试配置（由 compose.yaml 挂载为 /openbao/config/config.hcl）。
+# 与生产部署同构：file 存储 + plugin_directory + 声明式插件块（含插件 env 注入）。
+
+ui         = false
+api_addr   = "http://127.0.0.1:8200"
+cluster_addr = "https://127.0.0.1:8201" # raft 存储必需（单节点亦然）
+
+storage "raft" {
+  path    = "/openbao/data"
+  node_id = "node1"
+}
+
+listener "tcp" {
+  address         = "0.0.0.0:8200"
+  cluster_address = "0.0.0.0:8201" # raft 存储必需（单节点亦然）
+  tls_disable     = 1              # 仅限本地测试；生产请启用 TLS
+}
+
+plugin_directory = "/openbao/plugins"
+
+# 声明式插件块的自动注册（默认 false——不开启时 plugin 块仅用于 bao plugin init 手动流程）
+plugin_auto_register = true
+
+# 声明式注册 ACME 插件（需 OpenBao >= 2.5.0）。首次使用前：
+#   1. make build
+#   2. sha256sum bin/openbao-plugin-secrets-acme → 填入 sha256sum
+#   3. cp bin/openbao-plugin-secrets-acme data/plugins/
+#   4. bao operator init 得到 root token 后，填入下方 BAO_TOKEN
+#      （本地测试直接用 root token；生产请改用最小权限服务身份，见 README §3）
+#
+# 注意：version 必须与插件自报的 RunningVersion 一致——make build 用
+# git describe 注入（当前 v0.1.0）；升级版本时同步改这里。
+plugin "secret" "acme" {
+  command   = "openbao-plugin-secrets-acme"
+  version   = "v0.1.0"
+  sha256sum = "a893f9b519acf70af93438050a770cce7817a7c8cd7e1e16b6961ce503de94f9"
+  env = [
+    "BAO_ADDR=http://127.0.0.1:8200",
+    "BAO_TOKEN=<root token>",
+  ]
+}

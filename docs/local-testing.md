@@ -1,0 +1,119 @@
+# 本地 OpenBao 测试环境（Docker Compose）
+
+用 Docker Compose 在本地跑一个真实形态的 OpenBao（raft 持久化 + `plugin_directory` +
+声明式插件注册），加载本插件并走通签发链路。与生产部署的差异只在 TLS 与运行用户。
+
+## 前置条件
+
+- Docker + Docker Compose v2（`docker compose version` 可用）
+- Go（`make build` 用）
+- 镜像：`openbao/openbao:2.6.2`（声明式插件块需 OpenBao ≥ 2.5.0）
+
+## 快速开始
+
+```bash
+# 1. 构建插件（linux 本机二进制，ldflags 注入版本 = git describe，当前 v0.1.0）
+make build
+
+# 2. 把二进制的 sha256 填入 bao-config.hcl 的 plugin 块 sha256sum
+sha256sum bin/openbao-plugin-secrets-acme
+
+# 3. 拷贝插件到挂载目录（compose 映射为 /openbao/plugins）
+cp bin/openbao-plugin-secrets-acme data/plugins/
+
+# 4. 启动
+docker compose up -d
+
+# 5. 初始化（1 key / 1 threshold），保存输出的 unseal key 与 root token
+export BAO_ADDR=http://127.0.0.1:8200
+docker compose exec -T -e BAO_ADDR bao bao operator init -key-shares=1 -key-threshold=1
+
+# 6. 解封
+docker compose exec -T -e BAO_ADDR bao bao operator unseal <unseal key>
+
+# 7. 把 root token 填入 bao-config.hcl 的 plugin 块 BAO_TOKEN，然后重启并再次解封
+$EDITOR bao-config.hcl        # BAO_TOKEN=<root token> → 填入
+docker compose restart bao
+docker compose exec -T -e BAO_ADDR bao bao operator unseal <unseal key>
+
+# 8. 验证插件已声明式注册并挂载引擎
+export BAO_TOKEN=<root token> # bao CLI 的所有操作都需要它
+docker compose exec -T -e BAO_ADDR -e BAO_TOKEN bao bao plugin list secret   # 应看到 acme v0.1.0
+docker compose exec -T -e BAO_ADDR -e BAO_TOKEN bao bao secrets enable -path=acme acme
+```
+
+> **坑位提醒（实测踩过）**
+> - 容器内 bao CLI 默认 `BAO_ADDR=https://127.0.0.1:8200`，而本地 listener 是 HTTP，
+>   所以容器内执行 CLI 必须带 `-e BAO_ADDR=http://127.0.0.1:8200`。
+> - `bao` 的读写类命令都需要 `BAO_TOKEN`（init/unseal 除外）；漏掉会得到误导性的
+>   `permission denied` 或 `data from server response is empty`。
+> - `compose restart` 后 raft 处于 sealed 状态，需要再次 `operator unseal`。
+> - 换了 token（或改了 `bao-config.hcl` 的 env）：`docker compose restart bao` + 重新 unseal。
+
+## 配置测试资源
+
+凭据放在 KV v2（插件实时读取，改 KV 即轮换、无须重启）：
+
+```bash
+# 挂一个 KV v2 引擎当凭据库（本地没有现成的）
+docker compose exec -T -e BAO_ADDR -e BAO_TOKEN bao bao secrets enable -path=secret kv-v2
+
+# 放入 Cloudflare 凭据（键名 = lego 环境变量名）
+docker compose exec -T -e BAO_ADDR -e BAO_TOKEN bao bao kv put secret/dns/cf \
+  CLOUDFLARE_DNS_API_TOKEN=<your-token>
+```
+
+用 HTTP API 配置嵌套结构（`credentials_ref` 等）比 CLI 方便：
+
+```bash
+# DNS provider（指向上面的 KV）
+curl -s -H "X-Vault-Token: $BAO_TOKEN" -X POST \
+  -d '{"type":"cloudflare","credentials_ref":{"mount":"secret","path":"dns/cf"}}' \
+  $BAO_ADDR/v1/acme/dns-providers/cf
+
+# ACME 账户（本地无公网 CA 时可先用 pebble 或 LE staging 的 server_url）
+curl -s -H "X-Vault-Token: $BAO_TOKEN" -X POST \
+  -d '{"server_url":"https://acme-staging-v02.api.letsencrypt.org/directory","contact":"you@example.com","terms_of_service_agreed":true,"key_type":"EC256","dns_providers":[{"name":"cf"}]}' \
+  $BAO_ADDR/v1/acme/accounts/le-staging
+
+# Role
+curl -s -H "X-Vault-Token: $BAO_TOKEN" -X POST \
+  -d '{"account":"le-staging","allowed_domains":"example.com","allow_bare_domains":true}' \
+  $BAO_ADDR/v1/acme/roles/web
+
+# 签发
+curl -s -H "X-Vault-Token: $BAO_TOKEN" -X POST \
+  -d '{"common_name":"example.com"}' \
+  $BAO_ADDR/v1/acme/certs/web | python3 -m json.tool
+```
+
+字段含义、KV 键映射（`keys`）、多 provider zones 路由、缓存与 revoke 语义见 `README.md`。
+
+## 日常操作
+
+```bash
+docker compose stop        # 停止（数据保留）
+docker compose up -d       # 再启动（unseal 后可用）
+docker compose down        # 停止并删容器（数据保留在 data/data）
+docker compose down && rm -rf data/data   # 彻底重置（插件副本在 data/plugins，不动）
+```
+
+## 与生产部署的差异
+
+| 项 | 本地 compose | 生产（README §2/§3） |
+|---|---|---|
+| 存储 | raft 单节点（同构） | raft 集群或集成存储 |
+| TLS | 关闭（`tls_disable = 1`） | 必须启用 |
+| 运行用户 | 容器内 root（`compose.yaml` 注释说明，绕开镜像 entrypoint 的用户切换以简化 bind mount 权限） | 专用低权限用户 |
+| BAO_TOKEN | root token | 最小权限服务身份（凭据 read + 输出 create/update） |
+
+## 附：dev 模式速记（不推荐用于本插件）
+
+```bash
+docker run --rm -d --name bao-dev -p 8200:8200 \
+  -v "$(pwd)/bin:/openbao-plugins" --cap-add IPC_LOCK \
+  openbao/openbao:2.6.2 server -dev -dev-root-token-id=root -dev-plugin-dir=/openbao-plugins
+```
+
+dev 模式跳过 sha256 校验、内存存储（重启即丢），且**不走声明式 `env` 注入链路**——
+无法验证本插件依赖的 BAO_TOKEN 服务身份注入，仅适合临时把玩其他引擎。
