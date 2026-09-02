@@ -54,15 +54,27 @@ func (a *apiCredentialLoader) Load(ctx context.Context, clientToken string, ref 
 		if verr != nil {
 			return nil, fmt.Errorf("read kv1 %s/%s: %w", ref.Mount, ref.Path, verr)
 		}
+		if len(secret.Data) == 0 {
+			// KVv1 空数据兜底：不静默返回空凭据。
+			return nil, fmt.Errorf("credentials at %s/%s have been deleted (or contain no data)", ref.Mount, ref.Path)
+		}
 	case ref.Version > 0:
 		secret, verr = client.KVv2(ref.Mount).GetVersion(ctx, ref.Path, ref.Version)
 		if verr != nil {
 			return nil, fmt.Errorf("read kv2 %s/data/%s (version %d): %w", ref.Mount, ref.Path, ref.Version, verr)
 		}
+		if len(secret.Data) == 0 {
+			// KVv2 软删除：库不报错但 Data 为 nil，必须显式失败并定位凭据。
+			return nil, fmt.Errorf("credentials at %s/data/%s (version %d) have been deleted (or contain no data)", ref.Mount, ref.Path, ref.Version)
+		}
 	default:
 		secret, verr = client.KVv2(ref.Mount).Get(ctx, ref.Path)
 		if verr != nil {
 			return nil, fmt.Errorf("read kv2 %s/data/%s: %w", ref.Mount, ref.Path, verr)
+		}
+		if len(secret.Data) == 0 {
+			// KVv2 软删除：库不报错但 Data 为 nil，必须显式失败并定位凭据。
+			return nil, fmt.Errorf("credentials at %s/data/%s have been deleted (or contain no data)", ref.Mount, ref.Path)
 		}
 	}
 	data := secret.Data
