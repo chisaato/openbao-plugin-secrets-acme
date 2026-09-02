@@ -97,6 +97,17 @@ func (b *backend) cacheUpdate(ctx context.Context, s logical.Storage, key string
 	return s.Put(ctx, &logical.StorageEntry{Key: storageKeyCache + key, Value: raw})
 }
 
+// waiterRefAdd：singleflight 等待者为其 lease 补充引用计数。doIssue 写入的
+// 初始 Users=1 归属领导者对应的 lease；等待者共享领导者的响应后同样会各建
+// 一个 lease，须在单写临界区补自增，维持不变式 Users == 持有该条目的 lease
+// 数。条目此刻消失（极端竞争）返回错误，由调用方保守处理。
+func (b *backend) waiterRefAdd(ctx context.Context, s logical.Storage, key string) error {
+	return b.cacheUpdate(ctx, s, key, func(e *cacheEntry) *cacheEntry {
+		e.Users++
+		return e
+	})
+}
+
 func (b *backend) cacheCount(ctx context.Context, s logical.Storage) (int, error) {
 	b.cacheMu.RLock()
 	defer b.cacheMu.RUnlock()

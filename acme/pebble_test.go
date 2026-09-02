@@ -24,6 +24,8 @@ import (
 type pebbleEnv struct {
 	DirURL   string
 	ChallSrv string
+	// MgmtURL 是 challtestsrv 管理 API（测试 provider 经此读写 TXT）。
+	MgmtURL string
 }
 
 // startPebble 启动 pebble + challtestsrv 子进程并等待 /dir 就绪；
@@ -55,7 +57,11 @@ func startPebble(t *testing.T) *pebbleEnv {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "pebble-config.json"), cfg, 0o600))
 
-	env := &pebbleEnv{DirURL: "https://127.0.0.1:14000/dir", ChallSrv: "http://127.0.0.1:8055"}
+	env := &pebbleEnv{
+		DirURL:   "https://127.0.0.1:14000/dir",
+		ChallSrv: "http://127.0.0.1:8055",
+		MgmtURL:  "http://127.0.0.1:8056",
+	}
 	pebble := exec.Command(pebbleBin, "-config", filepath.Join(dir, "pebble-config.json"),
 		"-dnsserver", "127.0.0.1:8053")
 	pebble.Env = append(os.Environ(), "PEBBLE_VA_NOSLEEP=1")

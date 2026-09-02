@@ -105,13 +105,10 @@ func (b *backend) certRenew(ctx context.Context, req *logical.Request, d *framew
 		return nil, fmt.Errorf("重签内部错误：意外的 singleflight 结果 %T", v)
 	}
 	if !executed {
-		// 等待者：共享领导者的响应并为自己的 lease 建立引用，但缓存计数只含
-		// 领导者的 1，须在单临界区补自增，否则并发撤销会提前归零误删条目。
-		// 若条目此刻消失（极端竞争）则保守报错，由 core 稍后重试续期。
-		if uerr := b.cacheUpdate(ctx, req.Storage, key, func(e *cacheEntry) *cacheEntry {
-			e.Users++
-			return e
-		}); uerr != nil {
+		// 等待者：共享领导者的响应并为自己的 lease 建立引用，但缓存计数
+		// 只含领导者的 1，须在单临界区补自增，否则并发撤销会提前归零误删
+		// 条目。若条目此刻消失（极端竞争）则保守报错，由 core 稍后重试续期。
+		if uerr := b.waiterRefAdd(ctx, req.Storage, key); uerr != nil {
 			return nil, uerr
 		}
 	}

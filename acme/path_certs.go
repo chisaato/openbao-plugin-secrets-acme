@@ -119,8 +119,14 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 		}
 	}
 
-	// 2) singleflight 防并发同 key 重复签发。
+	// 2) singleflight 防并发同 key 重复签发。executed 标记本调用者是否为
+	//    领导者（闭包内设置，等待者经 WaitGroup happens-before 可见）：
+	//    领导者的 lease 引用即 doIssue 写入的初始 Users=1；等待者共享同一
+	//    响应并各自建 lease，返回前须经 waiterRefAdd 补自增，否则任一 lease
+	//    撤销即提前归零、误删条目并真撤销兄弟 lease 仍在用的证书。
+	executed := false
 	v, err, _ := b.issueGroup.Do(key, func() (interface{}, error) {
+		executed = true
 		return b.doIssue(ctx, req, roleName, role, account, cn, domains, key)
 	})
 	if err != nil {
@@ -129,6 +135,13 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 	resp, ok := v.(*logical.Response)
 	if !ok || resp == nil {
 		return nil, fmt.Errorf("签发内部错误：意外的 singleflight 结果 %T", v)
+	}
+	if !executed {
+		// 签发成功但本调用者（等待者）未能建立引用：报错让调用方重试——
+		// 重试将命中新鲜缓存走 Users++ 命中路径，自愈。
+		if uerr := b.waiterRefAdd(ctx, req.Storage, key); uerr != nil {
+			return logical.ErrorResponse("签发失败: %v", uerr), nil
+		}
 	}
 	return resp, nil
 }
@@ -155,13 +168,17 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 		return nil, err
 	}
 	var dns01Provider challenge.Provider = router
-	if err := client.Challenge.SetDNS01Provider(dns01Provider); err != nil {
+	// dns01Opts 生产恒为空（零行为差异），测试注入传播预检选项。
+	if err := client.Challenge.SetDNS01Provider(dns01Provider, b.dns01Opts...); err != nil {
 		return nil, fmt.Errorf("设置 DNS-01 provider: %w", err)
 	}
 
 	res, err := client.Certificate.Obtain(ctx, certificate.ObtainRequest{
 		Domains: domains,
 		Bundle:  true,
+		// lego v5 把证书密钥类型移到逐请求字段且无默认值（缺失时报
+		// "the key type is missing"）；v1 未暴露 role 级 key_type，统一 EC256。
+		KeyType: certcrypto.EC256,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ACME obtain: %w", err)

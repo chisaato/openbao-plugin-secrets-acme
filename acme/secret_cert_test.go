@@ -1,10 +1,17 @@
 package acme
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-acme/lego/v5/challenge"
+	"github.com/go-acme/lego/v5/challenge/dns01"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/stretchr/testify/require"
 )
@@ -15,6 +22,9 @@ import (
 func leaseReq(storage logical.Storage, key string) *logical.Request {
 	return &logical.Request{
 		Storage: storage,
+		// 与真实 core 一致：续期/撤销回调携带 lease 持有者的 token（重签
+		// 路径的凭据读取与 KV 输出需要）。
+		ClientToken: "test-token",
 		Secret: &logical.Secret{InternalData: map[string]interface{}{
 			"cache_key": key,
 			"role":      "web",
@@ -155,4 +165,197 @@ func TestBackendRegistersCertSecret(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, b.Secrets, 1)
 	require.Equal(t, secretCertType, b.Secrets[0].Type)
+}
+
+// ---- 真实 Obtain 成功路径：challtestsrv 测试 provider ----
+// registry/envNames 是包级白名单，测试进程内注册 challtestsrv 类型：
+// Present/CleanUp 经管理 API 直写 TXT，配合 dns01Opts 跳过传播预检，
+// doIssue 的真实 ACME Obtain（pebble）即可在单测内成功。
+
+type challtestsrvProvider struct{ mgmtURL string }
+
+func (p *challtestsrvProvider) Present(ctx context.Context, domain, _, keyAuth string) error {
+	info := dns01.GetChallengeInfo(ctx, domain, keyAuth)
+	return p.postTxt("/set-txt", strings.TrimSuffix(info.EffectiveFQDN, "."), info.Value)
+}
+
+func (p *challtestsrvProvider) CleanUp(ctx context.Context, domain, _, keyAuth string) error {
+	info := dns01.GetChallengeInfo(ctx, domain, keyAuth)
+	return p.postTxt("/clear-txt", strings.TrimSuffix(info.EffectiveFQDN, "."), "")
+}
+
+func (p *challtestsrvProvider) postTxt(endpoint, host, value string) error {
+	body, err := json.Marshal(map[string]string{"host": host, "value": value})
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(p.mgmtURL+endpoint, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("challtestsrv %s: HTTP %d", endpoint, resp.StatusCode)
+	}
+	return nil
+}
+
+// registerChalltestsrvProvider 注册测试 provider 类型，测试结束后还原白名单。
+func registerChalltestsrvProvider(t *testing.T) {
+	t.Helper()
+	oldBuild, hadBuild := registry["challtestsrv"]
+	oldNames := envNames["challtestsrv"]
+	registry["challtestsrv"] = func(_ context.Context, _ providerOpts, env map[string]string) (challenge.Provider, error) {
+		u := env["CHALLTESTSRV_URL"]
+		if u == "" {
+			return nil, fmt.Errorf("challtestsrv: 需要 CHALLTESTSRV_URL")
+		}
+		return &challtestsrvProvider{mgmtURL: u}, nil
+	}
+	envNames["challtestsrv"] = []string{"CHALLTESTSRV_URL"}
+	t.Cleanup(func() {
+		if hadBuild {
+			registry["challtestsrv"] = oldBuild
+		} else {
+			delete(registry, "challtestsrv")
+		}
+		envNames["challtestsrv"] = oldNames
+	})
+}
+
+// setupObtainable 预置可真实签发的环境：pebble + challtestsrv 测试 provider
+// + account（引用 cts）+ role。pebble 缺失时 Skip（与 startPebble 一致）。
+func setupObtainable(t *testing.T) (*backend, logical.Storage, *pebbleEnv) {
+	t.Helper()
+	env := startPebble(t)
+	b, storage := testBackend(t, NewFakeCredentialLoader(map[string]string{
+		"CHALLTESTSRV_URL": env.MgmtURL,
+	}))
+	// 跳过 lego 传播预检：TXT 由测试 provider 即时直写 challtestsrv，
+	// pebble VA（-dnsserver 127.0.0.1:8053）可立即读到，无需递归/权威检查。
+	b.dns01Opts = []dns01.ChallengeOption{dns01.PropagationWait(time.Millisecond, true)}
+	registerChalltestsrvProvider(t)
+	// 跳过 Present 内的 CNAME 解析（单测环境无外网 DNS）。
+	t.Setenv("LEGO_DISABLE_CNAME_SUPPORT", "true")
+	ctx := context.Background()
+
+	require.NoError(t, storage.Put(ctx, &logical.StorageEntry{
+		Key: "dns-providers/cts",
+		Value: mustJSON(t, &dnsProviderEntry{
+			Type:           "challtestsrv",
+			CredentialsRef: &credentialsRef{Mount: "secret", Path: "dns/cts"},
+		}),
+	}))
+
+	data := accountData(env.DirURL)
+	data["dns_providers"] = []interface{}{map[string]interface{}{"name": "cts"}}
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "accounts/le",
+		Storage: storage, ClientToken: "test-token", Data: data,
+	})
+	require.NoError(t, err)
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "roles/web",
+		Storage: storage, ClientToken: "test-token",
+		Data: map[string]interface{}{
+			"account":            "le",
+			"allowed_domains":    "example.com",
+			"allow_bare_domains": true,
+			"allow_subdomains":   true,
+		},
+	})
+	require.NoError(t, err)
+	return b, storage, env
+}
+
+// TestIssueSingleflightWaitersRefcount：并发首发同 key 时 N 个调用方各得
+// 一个 lease（singleflight 共享同一响应），等待者必须为其 lease 补引用，
+// 维持不变式 Users == 持有该条目的 lease 数。修复前仅领导者计入（Users=1）
+// ——本测试即该缺陷的 RED。
+func TestIssueSingleflightWaitersRefcount(t *testing.T) {
+	b, storage, _ := setupObtainable(t)
+	ctx := context.Background()
+
+	const n = 4
+	type result struct {
+		resp *logical.Response
+		err  error
+	}
+	results := make(chan result, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			resp, err := b.HandleRequest(ctx, &logical.Request{
+				Operation: logical.CreateOperation, Path: "certs/web",
+				Storage: storage, ClientToken: "test-token",
+				Data: map[string]interface{}{"common_name": "example.com"},
+			})
+			results <- result{resp, err}
+		}()
+	}
+	close(start) // N 个请求同时出发，重叠于 singleflight 窗口内
+
+	role, err := b.getRole(ctx, storage, "web")
+	require.NoError(t, err)
+	key := cacheKey(role, []string{"example.com"})
+
+	for i := 0; i < n; i++ {
+		r := <-results
+		require.NoError(t, r.err)
+		require.NotNil(t, r.resp)
+		require.False(t, r.resp.IsError(), "并发签发应成功: %v", r.resp)
+		require.NotEmpty(t, r.resp.Data["certificate"])
+	}
+	entry, err := b.cacheGet(ctx, storage, key)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	require.Equal(t, n, entry.Users, "N 个调用方各持一个 lease，Users 应为 N（等待者补引用缺失）")
+}
+
+// TestRenewReissueWaitersRefcount：并发重签同 key 时等待者共享领导者的新
+// 证书响应并各自续 lease，须补引用。该分支在 certRenew 中已存在，本测试
+// 为回归守护（签发路径等待者分支的 RED 由 TestIssueSingleflightWaitersRefcount
+// 承担）。
+func TestRenewReissueWaitersRefcount(t *testing.T) {
+	b, storage, _ := setupObtainable(t)
+	ctx := context.Background()
+
+	// 种入过期条目（Users=2，模拟 2 个 lease 均待续期），key 与真实签发一致。
+	role, err := b.getRole(ctx, storage, "web")
+	require.NoError(t, err)
+	domains := []string{"example.com"}
+	key := cacheKey(role, domains)
+	base := time.Now()
+	require.NoError(t, b.cachePut(ctx, storage, key, &cacheEntry{
+		Users: 2, Account: "le", CN: domains[0], Domains: domains,
+		CertificatePEM: selfSignedCertFor(t, base.Add(-100*time.Hour), base.Add(-time.Hour)),
+	}))
+
+	const n = 2
+	type result struct {
+		resp *logical.Response
+		err  error
+	}
+	results := make(chan result, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			resp, err := b.certRenew(ctx, leaseReq(storage, key), nil)
+			results <- result{resp, err}
+		}()
+	}
+	close(start)
+	for i := 0; i < n; i++ {
+		r := <-results
+		require.NoError(t, r.err)
+		require.NotNil(t, r.resp)
+		require.False(t, r.resp.IsError(), "重签应成功: %v", r.resp)
+	}
+	entry, err := b.cacheGet(ctx, storage, key)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	// 领导者重签（初始 Users=1）+ 等待者补 1 = 2，对应 2 个续期后的 lease。
+	require.Equal(t, n, entry.Users)
 }

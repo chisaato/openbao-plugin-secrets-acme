@@ -6,6 +6,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/go-acme/lego/v5/challenge/dns01"
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
@@ -56,6 +57,10 @@ type backend struct {
 	*framework.Backend
 	credLoader CredentialLoader // 凭据实时读取器（KV）
 	kvWriter   KVOutputWriter   // 证书 KV 输出
+	// dns01Opts 透传给 SetDNS01Provider 的附加选项。生产恒为 nil（零行为
+	// 差异）；测试注入以控制 DNS 传播预检（如 PropagationWait skipCheck），
+	// 使单测可用 challtestsrv 走通真实 ACME Obtain。
+	dns01Opts  []dns01.ChallengeOption
 	issueGroup singleflight.Group
 	cacheMu    sync.RWMutex
 }
