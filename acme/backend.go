@@ -38,8 +38,13 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 		kvWriter:   &apiKVWriter{},
 	}
 	b.RunningVersion = Version
-	b.Paths = pathDNSProviders(b)
+	b.Paths = paths(b)
 	return b, nil
+}
+
+// paths 聚合全部路径；后续任务向此追加。
+func paths(b *backend) []*framework.Path {
+	return append(pathDNSProviders(b), pathAccounts(b)...)
 }
 
 // backend 持有框架后端与签发链路依赖。

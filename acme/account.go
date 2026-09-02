@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
@@ -86,6 +87,23 @@ func parsePrivateKeyPEM(pemStr string) (crypto.Signer, error) {
 		return nil, fmt.Errorf("account key of type %T is not a signer", key)
 	}
 	return signer, nil
+}
+
+// legoUser 从持久化字段重建 lego 用户（私钥+注册信息）。
+func (e *accountEntry) legoUser() (*legoUser, error) {
+	key, err := parsePrivateKeyPEM(e.PrivateKeyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("account %s: %w", e.Name, err)
+	}
+	u := &legoUser{Email: e.Contact, key: key}
+	if e.RegistrationJSON != "" {
+		var reg acme.ExtendedAccount
+		if err := json.Unmarshal([]byte(e.RegistrationJSON), &reg); err != nil {
+			return nil, fmt.Errorf("account %s: decode registration: %w", e.Name, err)
+		}
+		u.Registration = &reg
+	}
+	return u, nil
 }
 
 // newLegoClient 为用户与 CA 目录构造 lego 客户端。
