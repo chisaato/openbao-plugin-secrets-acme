@@ -6,3 +6,6 @@ dist/
 data/
 # 本地 bao 配置含 root token，只留本地；模板见 bao-config.hcl.example
 bao-config.hcl
+
+# IDE
+.idea/
