@@ -3,6 +3,7 @@ module github.com/chisaato/openbao-plugin-secrets-acme
 go 1.26.0
 
 require (
+	github.com/go-acme/lego/v5 v5.4.1
 	github.com/openbao/openbao/api/v2 v2.6.0
 	github.com/openbao/openbao/sdk/v2 v2.6.2
 	github.com/stretchr/testify v1.12.1
@@ -39,6 +40,7 @@ require (
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/miekg/dns v1.1.73 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-testing-interface v1.14.2-0.20210821155943-2d9075ca8770 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
@@ -55,4 +57,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
+	software.sslmate.com/src/go-pkcs12 v0.7.3 // indirect
 )
