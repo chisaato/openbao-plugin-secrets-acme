@@ -80,7 +80,10 @@ func (rp *routingProvider) Present(ctx context.Context, domain, token, keyAuth s
 	if err != nil {
 		return err
 	}
-	return r.Provider.Present(ctx, domain, token, keyAuth)
+	if err := r.Provider.Present(ctx, domain, token, keyAuth); err != nil {
+		return fmt.Errorf("dns route %q: %w", r.Name, err)
+	}
+	return nil
 }
 
 func (rp *routingProvider) CleanUp(ctx context.Context, domain, token, keyAuth string) error {
@@ -88,7 +91,10 @@ func (rp *routingProvider) CleanUp(ctx context.Context, domain, token, keyAuth s
 	if err != nil {
 		return err
 	}
-	return r.Provider.CleanUp(ctx, domain, token, keyAuth)
+	if err := r.Provider.CleanUp(ctx, domain, token, keyAuth); err != nil {
+		return fmt.Errorf("dns route %q: %w", r.Name, err)
+	}
+	return nil
 }
 
 // Timeout 返回各子 provider 最保守（最大）的组合；全默认时 60s/2s。

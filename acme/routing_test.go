@@ -2,6 +2,7 @@ package acme
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -85,12 +86,55 @@ func TestRoutingDelegation(t *testing.T) {
 func TestRoutingTimeoutAggregate(t *testing.T) {
 	rp, _ := newRoutingProvider([]providerRoute{
 		{Name: "a", Provider: &recordingProvider{}},      // 10s/1s
-		{Name: "b", Provider: &routingDefaultProvider{}}, // 无 Timeout 接口
+		{Name: "b", Provider: &routingDefaultProvider{}}, // 无 Timeout 方法，聚合时被跳过
 	})
 	timeout, interval := rp.Timeout()
 	require.Equal(t, 10*time.Second, timeout)
 	require.Equal(t, time.Second, interval)
 }
 
-// routingDefaultProvider 只有 Provider 接口（测试无 Timeout 的子 provider）。
-type routingDefaultProvider struct{ recordingProvider }
+func TestRoutingTimeoutAllDefault(t *testing.T) {
+	rp, _ := newRoutingProvider([]providerRoute{
+		{Name: "a", Provider: &routingDefaultProvider{}},
+		{Name: "b", Provider: &routingDefaultProvider{}},
+	})
+	timeout, interval := rp.Timeout()
+	require.Equal(t, 60*time.Second, timeout)
+	require.Equal(t, 2*time.Second, interval)
+}
+
+// routingDefaultProvider 只有 Provider 接口（无 Timeout 方法，验证聚合跳过与全默认分支）。
+type routingDefaultProvider struct{}
+
+func (p *routingDefaultProvider) Present(ctx context.Context, domain, token, keyAuth string) error {
+	return nil
+}
+func (p *routingDefaultProvider) CleanUp(ctx context.Context, domain, token, keyAuth string) error {
+	return nil
+}
+
+// errProvider 的 Present/CleanUp 总是返回哨兵错误，用于断言委托错误 wrap 路由名。
+type errProvider struct{ err error }
+
+func (p *errProvider) Present(ctx context.Context, domain, token, keyAuth string) error {
+	return p.err
+}
+func (p *errProvider) CleanUp(ctx context.Context, domain, token, keyAuth string) error {
+	return p.err
+}
+
+func TestRoutingDelegationErrorWrap(t *testing.T) {
+	boom := errors.New("boom")
+	rp, _ := newRoutingProvider([]providerRoute{
+		{Name: "cf-broken", Zones: []string{"example.com"}, Provider: &errProvider{err: boom}},
+	})
+	ctx := context.Background()
+
+	err := rp.Present(ctx, "www.example.com", "tok", "ka")
+	require.ErrorIs(t, err, boom)
+	require.ErrorContains(t, err, `dns route "cf-broken"`)
+
+	err = rp.CleanUp(ctx, "www.example.com", "tok", "ka")
+	require.ErrorIs(t, err, boom)
+	require.ErrorContains(t, err, `dns route "cf-broken"`)
+}
