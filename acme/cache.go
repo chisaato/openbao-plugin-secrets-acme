@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -66,6 +67,34 @@ func (b *backend) cacheDelete(ctx context.Context, s logical.Storage, key string
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
 	return s.Delete(ctx, storageKeyCache+key)
+}
+
+// cacheUpdate 在单个写临界区内完成 get→变更→put，保证并发调用者的读改写
+// 原子性（如命中路径的 Users 引用计数自增）。fn 返回 nil 表示删除条目；
+// 条目在临界区内已不存在（如被并发删除）时返回错误，由调用方决定重试。
+func (b *backend) cacheUpdate(ctx context.Context, s logical.Storage, key string, fn func(*cacheEntry) *cacheEntry) error {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	item, err := s.Get(ctx, storageKeyCache+key)
+	if err != nil {
+		return err
+	}
+	if item == nil {
+		return fmt.Errorf("cache entry %q 已不存在", key)
+	}
+	var entry cacheEntry
+	if err := item.DecodeJSON(&entry); err != nil {
+		return err
+	}
+	updated := fn(&entry)
+	if updated == nil {
+		return s.Delete(ctx, storageKeyCache+key)
+	}
+	raw, err := json.Marshal(updated)
+	if err != nil {
+		return err
+	}
+	return s.Put(ctx, &logical.StorageEntry{Key: storageKeyCache + key, Value: raw})
 }
 
 func (b *backend) cacheCount(ctx context.Context, s logical.Storage) (int, error) {

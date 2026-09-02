@@ -98,15 +98,25 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 			return nil, err
 		}
 		if entry != nil && !certNeedsRenewal(entry.CertificatePEM, role.CacheForRatio) {
-			entry.Users++
-			if err := b.cachePut(ctx, req.Storage, key, entry); err != nil {
+			// Users++ 的读改写必须在单临界区完成（cacheUpdate），否则并发
+			// 命中同 key 会丢失更新（应 N+2 得 N+1）。
+			err := b.cacheUpdate(ctx, req.Storage, key, func(e *cacheEntry) *cacheEntry {
+				e.Users++
+				return e
+			})
+			if err != nil {
 				return nil, err
 			}
-			return b.respondWithCert(ctx, req, roleName, role, entry, key)
+			resp, err := b.respondWithCert(ctx, req, roleName, role, entry, key)
+			if err != nil {
+				// 与新鲜签发路径一致：包装为错误响应（而非裸 error）。
+				return logical.ErrorResponse("签发失败: %v", err), nil
+			}
+			return resp, nil
 		}
 	}
 
-	// 2) singleflight 防并发同 key 重复签发；条目读改写由 cacheMu 串行化。
+	// 2) singleflight 防并发同 key 重复签发。
 	v, err, _ := b.issueGroup.Do(key, func() (interface{}, error) {
 		return b.doIssue(ctx, req, roleName, role, account, cn, domains, key)
 	})
@@ -171,16 +181,27 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 	return b.respondWithCert(ctx, req, roleName, role, entry, key)
 }
 
-// respondWithCert：KV 输出（未配置则 no-op）+ 组装响应 + MaxTTL=证书剩余寿命。
-// 新鲜签发与缓存命中共用：签发成功但 KV 输出失败时证书已缓存，调用者重试
-// 会命中本路径补写输出。
+// respondWithCert：KV 输出（未配置则 no-op）+ 组装响应（含证书有效期）+
+// MaxTTL=证书剩余寿命。新鲜签发与缓存命中共用：KV 输出失败时删除缓存条目
+// 后报错，调用者重试走完整重签。
 func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, entry *cacheEntry, key string) (*logical.Response, error) {
 	kvPath, err := b.writeCertOutput(ctx, req, roleName, role, entry.CN, entry)
 	if err != nil {
+		// 不变式：签发成功+KV 成功 = Users=1 = lease 数。KV 失败时响应无
+		// Secret、core 不会建 lease，残留条目（Users≥1）将无人释放成为孤儿
+		// 引用（重试命中路径还会继续 +1）。整条删除后重试完整重签，代价是
+		// 多一次 ACME Obtain，可接受。
+		if delErr := b.cacheDelete(ctx, req.Storage, key); delErr != nil {
+			return nil, fmt.Errorf("KV 输出失败: %w（且缓存清理失败: %v）", err, delErr)
+		}
 		return nil, fmt.Errorf("KV 输出失败: %w", err)
 	}
+	notBefore, notAfter := certValidity(entry.CertificatePEM)
 	resp := b.issueResponse(entry, key, role.Account, kvPath)
-	if _, notAfter := certValidity(entry.CertificatePEM); !notAfter.IsZero() {
+	if !notAfter.IsZero() {
+		// 有效期以 RFC3339 字符串输出，与 KV 输出（writeCertOutput）语义一致。
+		resp.Data["not_before"] = notBefore.Format(time.RFC3339)
+		resp.Data["not_after"] = notAfter.Format(time.RFC3339)
 		// 剩余寿命即最大租期；Renew（Task 12）据此在到期前续期。
 		resp.Secret.LeaseOptions.MaxTTL = time.Until(notAfter)
 	}
