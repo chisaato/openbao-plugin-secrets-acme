@@ -170,9 +170,18 @@ func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *fr
 	if existing == nil && len(role.AllowedDomains) == 0 {
 		return logical.ErrorResponse("allowed_domains 必填"), nil
 	}
-	role.AllowBareDomains = d.Get("allow_bare_domains").(bool)
-	role.AllowSubdomains = d.Get("allow_subdomains").(bool)
-	role.DisableCache = d.Get("disable_cache").(bool)
+	// bool 字段仅在请求中显式出现时覆盖（GetOk 对显式 false 也返回 ok=true，
+	// 允许显式改回 false）；未提及则保留旧值，避免部分更新静默重置。
+	// 与 path_accounts.go 的 account bool 字段处理一致。
+	if v, ok := d.GetOk("allow_bare_domains"); ok {
+		role.AllowBareDomains = v.(bool)
+	}
+	if v, ok := d.GetOk("allow_subdomains"); ok {
+		role.AllowSubdomains = v.(bool)
+	}
+	if v, ok := d.GetOk("disable_cache"); ok {
+		role.DisableCache = v.(bool)
+	}
 	// cache_for_ratio 有 Default=70：未显式携带键时 GetOk ok=false，跳过以保留
 	// 旧值；显式携带时校验 (0,100]（Default 70 非零，显式传值恒可读到）。
 	if ratio, ok := d.GetOk("cache_for_ratio"); ok {

@@ -95,3 +95,92 @@ func TestRoleCRUD(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+// 部分更新不得静默重置 bool 字段：allow_bare_domains/allow_subdomains 被重置
+// false 会静默收紧签发策略，disable_cache 被重置会静默恢复缓存。
+// 对齐 account 路径 TestAccountPartialUpdatePreservesBools 先例。
+func TestRolePartialUpdatePreservesBools(t *testing.T) {
+	env := startPebble(t)
+	b, storage := testBackend(t, NewFakeCredentialLoader(nil))
+	ctx := context.Background()
+
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "accounts/le",
+		Storage: storage, Data: accountData(env.DirURL),
+	})
+	require.NoError(t, err)
+
+	// 创建：三个 bool 均为 true
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "roles/web",
+		Storage: storage,
+		Data: map[string]interface{}{
+			"account":            "le",
+			"allowed_domains":    "example.com",
+			"allow_bare_domains": true,
+			"allow_subdomains":   true,
+			"disable_cache":      true,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "create: %v", resp)
+
+	// 部分更新：仅改 allowed_domains 与 cache_for_ratio，不提及三个 bool
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "roles/web",
+		Storage: storage,
+		Data: map[string]interface{}{
+			"account":         "le",
+			"allowed_domains": "example.com,example.org",
+			"cache_for_ratio": 50,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "partial update: %v", resp)
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "roles/web", Storage: storage,
+	})
+	require.NoError(t, err)
+	// 未提及的 bool 字段保留旧值
+	require.Equal(t, true, resp.Data["allow_bare_domains"])
+	require.Equal(t, true, resp.Data["allow_subdomains"])
+	require.Equal(t, true, resp.Data["disable_cache"])
+	require.Equal(t, 50, resp.Data["cache_for_ratio"])
+
+	// 显式覆盖走 ok=true 路径：显式 false 可覆盖回 false
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "roles/web",
+		Storage: storage,
+		Data: map[string]interface{}{
+			"account":         "le",
+			"allowed_domains": "example.com,example.org",
+			"disable_cache":   false,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "explicit false: %v", resp)
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "roles/web", Storage: storage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, false, resp.Data["disable_cache"])
+
+	// 显式 true 再度生效
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "roles/web",
+		Storage: storage,
+		Data: map[string]interface{}{
+			"account":         "le",
+			"allowed_domains": "example.com,example.org",
+			"disable_cache":   true,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "explicit true: %v", resp)
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "roles/web", Storage: storage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, true, resp.Data["disable_cache"])
+}
