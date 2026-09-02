@@ -52,7 +52,7 @@ func TestDNSProviderCRUD(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, resp.IsError())
-	require.Contains(t, resp.Error().Error(), "alidns, cloudflare, tencentcloud")
+	require.Contains(t, resp.Error().Error(), "alidns, cloudflare, exec, tencentcloud")
 
 	// type 创建后不可改
 	resp, err = b.HandleRequest(context.Background(), &logical.Request{
@@ -152,6 +152,68 @@ func TestDNSProviderTimeouts(t *testing.T) {
 	require.NoError(t, item.DecodeJSON(&entry))
 	require.Equal(t, 300*time.Second, entry.PropagationTimeout)
 	require.Equal(t, 5*time.Second, entry.PollingInterval)
+}
+
+func TestDNSProviderPropagationSkip(t *testing.T) {
+	b, storage := testBackend(t, NewFakeCredentialLoader(map[string]string{
+		"CLOUDFLARE_DNS_API_TOKEN": "tok",
+	}))
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation:   logical.CreateOperation,
+		Path:        "dns-providers/cf",
+		Storage:     storage,
+		ClientToken: "test-token",
+		Data: map[string]interface{}{
+			"type":                   "cloudflare",
+			"credentials_ref":        map[string]interface{}{"mount": "secret", "path": "dns/cf"},
+			"skip_propagation_check": true,
+			"propagation_wait":       3,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "创建失败: %v", resp)
+
+	// 负值拒绝：framework 层对 TypeDurationSecond 直接校验负数。
+	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+		Operation:   logical.CreateOperation,
+		Path:        "dns-providers/neg",
+		Storage:     storage,
+		ClientToken: "test-token",
+		Data: map[string]interface{}{
+			"type":                   "cloudflare",
+			"credentials_ref":        map[string]interface{}{"mount": "secret", "path": "dns/cf"},
+			"skip_propagation_check": true,
+			"propagation_wait":       -1,
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "negative")
+
+	// 响应与存储回读
+	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.ReadOperation, Path: "dns-providers/cf", Storage: storage, ClientToken: "test-token",
+	})
+	require.NoError(t, err)
+	require.Equal(t, true, resp.Data["skip_propagation_check"])
+	require.Equal(t, int64(3), resp.Data["propagation_wait"])
+
+	item, err := storage.Get(context.Background(), "dns-providers/cf")
+	require.NoError(t, err)
+	var entry dnsProviderEntry
+	require.NoError(t, item.DecodeJSON(&entry))
+	require.True(t, entry.SkipPropagationCheck)
+	require.Equal(t, 3, entry.PropagationWait)
+
+	// 存量条目（无新键的旧 JSON）解码后为零值 = lego 默认预检，向后兼容。
+	item, err = storage.Get(context.Background(), "dns-providers/neg")
+	require.NoError(t, err)
+	if item != nil {
+		var old dnsProviderEntry
+		require.NoError(t, item.DecodeJSON(&old))
+		require.False(t, old.SkipPropagationCheck)
+		require.Equal(t, 0, old.PropagationWait)
+	}
 }
 
 func mustJSON(t *testing.T, v interface{}) []byte {

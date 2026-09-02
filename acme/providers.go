@@ -10,6 +10,7 @@ import (
 	"github.com/go-acme/lego/v5/challenge"
 	"github.com/go-acme/lego/v5/providers/dns/alidns"
 	"github.com/go-acme/lego/v5/providers/dns/cloudflare"
+	"github.com/go-acme/lego/v5/providers/dns/exec"
 	"github.com/go-acme/lego/v5/providers/dns/tencentcloud"
 )
 
@@ -27,6 +28,7 @@ var registry = map[string]providerBuilder{
 	"cloudflare":   buildCloudflare,
 	"alidns":       buildAliDNS,
 	"tencentcloud": buildTencentCloud,
+	"exec":         buildExec,
 }
 
 // envNames 是各 provider 认识的全部键名（凭据映射 keys 的合法左值）。
@@ -34,6 +36,7 @@ var envNames = map[string][]string{
 	"cloudflare":   {"CLOUDFLARE_EMAIL", "CLOUDFLARE_API_KEY", "CLOUDFLARE_DNS_API_TOKEN", "CLOUDFLARE_ZONE_API_TOKEN"},
 	"alidns":       {"ALICLOUD_ACCESS_KEY", "ALICLOUD_RAM_ROLE", "ALICLOUD_REGION_ID", "ALICLOUD_SECRET_KEY", "ALICLOUD_SECURITY_TOKEN"},
 	"tencentcloud": {"TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY", "TENCENTCLOUD_REGION", "TENCENTCLOUD_SESSION_TOKEN"},
+	"exec":         {"EXEC_PATH", "EXEC_MODE", "EXEC_PROPAGATION_TIMEOUT", "EXEC_POLLING_INTERVAL"},
 }
 
 // newProvider 按类型查注册表并构造 provider。
@@ -152,4 +155,27 @@ func tencentcloudConfig(env map[string]string) (*tencentcloud.Config, error) {
 			strings.Join(envNames["tencentcloud"], ", "))
 	}
 	return cfg, nil
+}
+
+// buildExec 构造 exec provider：外部程序负责真实 DNS 写/清（任意 DNS 商兜底、
+// 私有 DNS、测试环境）。凭据键经 resolveKeys 以 env map 传入，作为子进程
+// 环境的一部分（短暂私有，插件进程自身 env 不注入凭据）。EXEC_MODE 透传给
+// lego（"RAW" 时子进程按 argv 收到 domain/token/keyAuth 原文）。
+func buildExec(_ context.Context, opts providerOpts, env map[string]string) (challenge.Provider, error) {
+	cfg := exec.NewDefaultConfig()
+	path, ok := env["EXEC_PATH"]
+	if !ok || path == "" {
+		return nil, fmt.Errorf("exec: 需要 EXEC_PATH（可用键：%s）", strings.Join(envNames["exec"], ", "))
+	}
+	cfg.Program = path
+	if mode, ok := env["EXEC_MODE"]; ok {
+		cfg.Mode = mode
+	}
+	if opts.PropagationTimeout > 0 {
+		cfg.PropagationTimeout = opts.PropagationTimeout
+	}
+	if opts.PollingInterval > 0 {
+		cfg.PollingInterval = opts.PollingInterval
+	}
+	return exec.NewDNSProviderConfig(cfg)
 }

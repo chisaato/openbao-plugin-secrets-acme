@@ -359,3 +359,34 @@ func TestRenewReissueWaitersRefcount(t *testing.T) {
 	// 领导者重签（初始 Users=1）+ 等待者补 1 = 2，对应 2 个续期后的 lease。
 	require.Equal(t, n, entry.Users)
 }
+
+// TestIssueSkipsPropagationCheckViaDNSProvider：dns-provider 条目的
+// skip_propagation_check 经 buildRoutes 聚合为请求级 dns01 选项（Task 14
+// 验收链路依赖的生产机制）——不注入 b.dns01Opts 测试缝，仅凭条目即可真实
+// 签发。skip=false 的反例（默认预检轮询公网权威 NS 至超时）耗时长且依赖
+// 外网 DNS，不在单测覆盖。
+func TestIssueSkipsPropagationCheckViaDNSProvider(t *testing.T) {
+	b, storage, _ := setupObtainable(t)
+	// 拆除测试缝：预检跳过必须来自 dns-provider 条目（生产路径）。
+	b.dns01Opts = nil
+	ctx := context.Background()
+
+	raw, err := storage.Get(ctx, "dns-providers/cts")
+	require.NoError(t, err)
+	var entry dnsProviderEntry
+	require.NoError(t, raw.DecodeJSON(&entry))
+	entry.SkipPropagationCheck = true
+	entry.PropagationWait = 1
+	require.NoError(t, storage.Put(ctx, &logical.StorageEntry{
+		Key: "dns-providers/cts", Value: mustJSON(t, &entry),
+	}))
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/web",
+		Storage: storage, ClientToken: "test-token",
+		Data: map[string]interface{}{"common_name": "example.com"},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "签发应成功: %v", resp)
+	require.NotEmpty(t, resp.Data["certificate"])
+}

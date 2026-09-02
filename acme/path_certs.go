@@ -8,6 +8,7 @@ import (
 	"github.com/go-acme/lego/v5/certcrypto"
 	"github.com/go-acme/lego/v5/certificate"
 	"github.com/go-acme/lego/v5/challenge"
+	"github.com/go-acme/lego/v5/challenge/dns01"
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
@@ -31,35 +32,46 @@ func pathCerts(b *backend) []*framework.Path {
 	}}
 }
 
-// buildRoutes：按 account.dns_providers 顺序实时读凭据并构造子 provider。
-// 凭据仅在请求生命周期内存在，不落存储、不进日志、不进响应。
-func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *accountEntry) (*routingProvider, error) {
+// buildRoutes：按 account.dns_providers 顺序实时读凭据并构造子 provider，
+// 同时聚合各条目的传播预检策略（任一 dns-provider 要求跳过即整体跳过——
+// 预检由 SetDNS01Provider 对所有路由共享）。凭据仅在请求生命周期内存在，
+// 不落存储、不进日志、不进响应。
+func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *accountEntry) (*routingProvider, []dns01.ChallengeOption, error) {
 	routes := make([]providerRoute, 0, len(acc.DNSProviders))
+	var extraOpts []dns01.ChallengeOption
 	for _, ref := range acc.DNSProviders {
 		dp, err := b.getDNSProvider(ctx, req.Storage, ref.Name)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if dp == nil {
-			return nil, fmt.Errorf("dns-provider %q 不存在", ref.Name)
+			return nil, nil, fmt.Errorf("dns-provider %q 不存在", ref.Name)
 		}
 		if dp.CredentialsRef == nil {
-			return nil, fmt.Errorf("dns-provider %q 缺少 credentials_ref", ref.Name)
+			return nil, nil, fmt.Errorf("dns-provider %q 缺少 credentials_ref", ref.Name)
 		}
 		raw, err := b.credLoader.Load(ctx, req.ClientToken, *dp.CredentialsRef)
 		if err != nil {
-			return nil, fmt.Errorf("dns-provider %q 凭据读取失败: %w", ref.Name, err)
+			return nil, nil, fmt.Errorf("dns-provider %q 凭据读取失败: %w", ref.Name, err)
 		}
 		provider, err := newProvider(ctx, dp.Type, providerOpts{
 			PropagationTimeout: dp.PropagationTimeout,
 			PollingInterval:    dp.PollingInterval,
 		}, resolveKeys(raw, *dp.CredentialsRef, envNames[dp.Type]))
 		if err != nil {
-			return nil, fmt.Errorf("dns-provider %q: %w", ref.Name, err)
+			return nil, nil, fmt.Errorf("dns-provider %q: %w", ref.Name, err)
 		}
 		routes = append(routes, providerRoute{Name: ref.Name, Zones: ref.Zones, Provider: provider})
+		if dp.SkipPropagationCheck {
+			extraOpts = append(extraOpts, dns01.PropagationWait(
+				time.Duration(dp.PropagationWait)*time.Second, true))
+		}
 	}
-	return newRoutingProvider(routes)
+	router, err := newRoutingProvider(routes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return router, extraOpts, nil
 }
 
 func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
@@ -148,7 +160,7 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 
 // doIssue：路由→实时凭据→provider→Obtain→缓存→KV 输出→响应。
 func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, account *accountEntry, cn string, domains []string, key string) (*logical.Response, error) {
-	router, err := b.buildRoutes(ctx, req, account)
+	router, extraOpts, err := b.buildRoutes(ctx, req, account)
 	if err != nil {
 		return nil, err
 	}
@@ -168,8 +180,10 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 		return nil, err
 	}
 	var dns01Provider challenge.Provider = router
-	// dns01Opts 生产恒为空（零行为差异），测试注入传播预检选项。
-	if err := client.Challenge.SetDNS01Provider(dns01Provider, b.dns01Opts...); err != nil {
+	// dns01Opts 生产为空（零行为差异），测试注入传播预检选项；dns-provider
+	// 条目的 skip_propagation_check 经 buildRoutes 聚合为请求级选项。
+	if err := client.Challenge.SetDNS01Provider(dns01Provider,
+		append(append([]dns01.ChallengeOption{}, b.dns01Opts...), extraOpts...)...); err != nil {
 		return nil, fmt.Errorf("设置 DNS-01 provider: %w", err)
 	}
 

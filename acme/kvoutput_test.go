@@ -83,13 +83,14 @@ func TestWriteCertOutput(t *testing.T) {
 }
 
 // newKVPutServer 模拟 KVv2 Put 端点（/v1/{mount}/data/{path}），
-// 校验调用者 token 透传；capture 由测试填充以检视请求。
+// 校验请求以插件 env token 身份发出（调用者 ClientToken 经 core 哈希，
+// 不得透传）；capture 由测试填充以检视请求。
 func newKVPutServer(t *testing.T, capture *map[string]interface{}) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/kv-certs/data/certs/web/www.example.com", func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-Vault-Token"); got != "fake-token" {
-			t.Errorf("clientToken 未透传: got %q", got)
+		if got := r.Header.Get("X-Vault-Token"); got != pluginEnvToken {
+			t.Errorf("应以插件 env token 身份请求: got %q", got)
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -112,9 +113,10 @@ func TestAPIKVWriterPut(t *testing.T) {
 	var capture map[string]interface{}
 	ts := newKVPutServer(t, &capture)
 	t.Setenv("BAO_ADDR", ts.URL)
+	t.Setenv("BAO_TOKEN", pluginEnvToken)
 
 	w := &apiKVWriter{}
-	err := w.Write(context.Background(), "fake-token", "kv-certs", "certs/web/www.example.com",
+	err := w.Write(context.Background(), "hashed-caller-token", "kv-certs", "certs/web/www.example.com",
 		map[string]interface{}{"certificate": "C"})
 	require.NoError(t, err)
 	require.Equal(t, "C", capture["data"].(map[string]interface{})["certificate"])

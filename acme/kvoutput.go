@@ -17,15 +17,18 @@ type KVOutputWriter interface {
 	Write(ctx context.Context, clientToken, mount, path string, data map[string]interface{}) error
 }
 
-// apiKVWriter 用调用者 token 写 KVv2。地址来自插件进程 env（BAO_ADDR/VAULT_ADDR）。
+// apiKVWriter 用插件进程自身的 api client 写 KVv2。地址与 token 来自插件
+// 进程 env（BAO_ADDR/BAO_TOKEN 或 VAULT_*）——ClientToken 经 core salted+hashed
+// 后传给插件，不能用作身份；部署须给插件注入专用 token（见 README）。
 type apiKVWriter struct{}
 
 func (a *apiKVWriter) Write(ctx context.Context, clientToken, mount, path string, data map[string]interface{}) error {
+	// clientToken 是哈希值，仅保留在接口签名中以兼容 Fake 实现。
+	_ = clientToken
 	client, err := api.NewClient(nil)
 	if err != nil {
 		return fmt.Errorf("create openbao client: %w", err)
 	}
-	client.SetToken(clientToken)
 	_, err = client.KVv2(mount).Put(ctx, path, data)
 	if err != nil {
 		return fmt.Errorf("write kv2 %s/%s: %w", mount, path, err)

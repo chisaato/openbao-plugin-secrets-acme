@@ -30,11 +30,16 @@ type CredentialLoader interface {
 	Load(ctx context.Context, clientToken string, ref credentialsRef) (map[string]string, error)
 }
 
-// apiCredentialLoader 用调用者 token 构造客户端实时读 KV。
-// API 地址来自插件进程环境变量（BAO_ADDR/VAULT_ADDR），部署须保证注入（见 README）。
+// apiCredentialLoader 用插件进程自身的 api client 实时读 KV。
+// 地址与 token 均来自插件进程环境（BAO_ADDR/BAO_TOKEN 或 VAULT_*）——
+// ClientToken 经 core salted+hashed 后才传给插件（sdk logical.Request 契约），
+// 不能用作访问其他 mount 的身份；部署须给插件注入专用 token（见 README）。
 type apiCredentialLoader struct{}
 
 func (a *apiCredentialLoader) Load(ctx context.Context, clientToken string, ref credentialsRef) (map[string]string, error) {
+	// clientToken 是哈希值，仅保留在接口签名中以兼容 Fake 实现；此处刻意
+	// 不 SetToken——api.NewClient(nil) 自动读取 BAO_TOKEN/VAULT_TOKEN。
+	_ = clientToken
 	if ref.Mount == "" || ref.Path == "" {
 		return nil, fmt.Errorf("credentials_ref 需要 mount 与 path")
 	}
@@ -42,7 +47,6 @@ func (a *apiCredentialLoader) Load(ctx context.Context, clientToken string, ref 
 	if err != nil {
 		return nil, fmt.Errorf("create openbao client: %w", err)
 	}
-	client.SetToken(clientToken)
 
 	// version 0 表示读最新版本；>0 时按指定版本读取（KVv2）。
 	var (

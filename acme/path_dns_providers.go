@@ -21,6 +21,12 @@ type dnsProviderEntry struct {
 	CredentialsRef     *credentialsRef `json:"credentials_ref,omitempty"`
 	PropagationTimeout time.Duration   `json:"propagation_timeout"`
 	PollingInterval    time.Duration   `json:"polling_interval"`
+	// 传播预检策略（对齐 lego CLI --dns.disable-cp/--dns.propagation-wait）：
+	// skip=true 时跳过 lego 主动预检（递归/权威 NS 轮询），Present 后改为固定
+	// 等待 propagation_wait 秒。私有 DNS（查不到公网权威 NS）与本地测试 CA
+	// （pebble+challtestsrv）等场景必需；默认 false 保持 lego 默认预检。
+	SkipPropagationCheck bool `json:"skip_propagation_check"`
+	PropagationWait      int  `json:"propagation_wait"`
 }
 
 // validateProviderEntry fail-fast 试读凭据并试构造 provider；
@@ -67,7 +73,7 @@ func pathDNSProviders(b *backend) []*framework.Path {
 		},
 		"type": {
 			Type:        framework.TypeString,
-			Description: "lego provider 类型，白名单：cloudflare、alidns、tencentcloud。创建后不可改。",
+			Description: "lego provider 类型，白名单：cloudflare、alidns、tencentcloud、exec。创建后不可改。",
 		},
 		"credentials_ref": {
 			Type:        framework.TypeMap,
@@ -80,6 +86,14 @@ func pathDNSProviders(b *backend) []*framework.Path {
 		"polling_interval": {
 			Type:        framework.TypeDurationSecond,
 			Description: "传播轮询间隔（秒）；0=用 provider 默认。",
+		},
+		"skip_propagation_check": {
+			Type:        framework.TypeBool,
+			Description: "跳过 lego 主动 DNS 传播预检，Present 后改为固定等待（私有 DNS/本地测试 CA 场景）。",
+		},
+		"propagation_wait": {
+			Type:        framework.TypeDurationSecond,
+			Description: "skip_propagation_check=true 时的固定等待秒数；0=立即通知 ACME。",
 		},
 	}
 
@@ -101,9 +115,11 @@ func pathDNSProviders(b *backend) []*framework.Path {
 					}
 					// 凭据引用不出现在响应中；计时字段以秒输出（与输入语义一致）。
 					return &logical.Response{Data: map[string]interface{}{
-						"type":                entry.Type,
-						"propagation_timeout": int64(entry.PropagationTimeout.Seconds()),
-						"polling_interval":    int64(entry.PollingInterval.Seconds()),
+						"type":                   entry.Type,
+						"propagation_timeout":    int64(entry.PropagationTimeout.Seconds()),
+						"polling_interval":       int64(entry.PollingInterval.Seconds()),
+						"skip_propagation_check": entry.SkipPropagationCheck,
+						"propagation_wait":       int64(entry.PropagationWait),
 					}}, nil
 				},
 			},
@@ -155,6 +171,17 @@ func (b *backend) pathDNSProviderWrite(ctx context.Context, req *logical.Request
 	}
 	if v, ok := d.GetOk("polling_interval"); ok {
 		entry.PollingInterval = time.Duration(v.(int)) * time.Second
+	}
+	// bool 字段仅在请求中显式出现时覆盖（与 account/role 的显式 false 语义一致）。
+	if v, ok := d.GetOk("skip_propagation_check"); ok {
+		entry.SkipPropagationCheck = v.(bool)
+	}
+	if v, ok := d.GetOk("propagation_wait"); ok {
+		if w := v.(int); w < 0 {
+			return logical.ErrorResponse("propagation_wait 不能为负"), nil
+		} else {
+			entry.PropagationWait = w
+		}
 	}
 
 	if _, ok := registry[entry.Type]; !ok {
