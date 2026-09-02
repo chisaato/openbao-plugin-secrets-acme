@@ -39,6 +39,8 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 	}
 	b.RunningVersion = Version
 	b.Paths = paths(b)
+	// 证书 secret 的 Renew/Revoke 回调需要 *backend，故按实例绑定注册。
+	b.Secrets = []*framework.Secret{secretCertFor(b)}
 	return b, nil
 }
 

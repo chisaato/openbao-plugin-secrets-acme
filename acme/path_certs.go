@@ -100,6 +100,9 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 		if entry != nil && !certNeedsRenewal(entry.CertificatePEM, role.CacheForRatio) {
 			// Users++ 的读改写必须在单临界区完成（cacheUpdate），否则并发
 			// 命中同 key 会丢失更新（应 N+2 得 N+1）。
+			// 已知一次性微竞争：此刻若有并发重签以新证书覆写条目，下方响应
+			// 仍会展示读取到的旧证书——窗口极短且仅影响本次响应内容，下一次
+			// 命中即取到新证书，设计上容忍（Task 12 Renew 同理）。
 			err := b.cacheUpdate(ctx, req.Storage, key, func(e *cacheEntry) *cacheEntry {
 				e.Users++
 				return e
@@ -197,7 +200,7 @@ func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, rol
 		return nil, fmt.Errorf("KV 输出失败: %w", err)
 	}
 	notBefore, notAfter := certValidity(entry.CertificatePEM)
-	resp := b.issueResponse(entry, key, role.Account, kvPath)
+	resp := b.issueResponse(entry, key, role.Account, roleName, kvPath)
 	if !notAfter.IsZero() {
 		// 有效期以 RFC3339 字符串输出，与 KV 输出（writeCertOutput）语义一致。
 		resp.Data["not_before"] = notBefore.Format(time.RFC3339)
@@ -216,9 +219,10 @@ func certValidity(certPEM string) (time.Time, time.Time) {
 	return time.Time{}, time.Time{}
 }
 
-// issueResponse 组装签发/缓存命中响应；InternalData 供 Renew/Revoke（Task 12）
-// 定位缓存条目与账户，不含敏感值。
-func (b *backend) issueResponse(entry *cacheEntry, key, account, kvPath string) *logical.Response {
+// issueResponse 组装签发/缓存命中响应；InternalData 供 Renew/Revoke 定位
+// 缓存条目与账户，不含敏感值。secret_type 是 framework 路由续期/撤销回调的
+// 依据（sdk v2.6.2 的 logical.Secret 无 Type 字段，以 InternalData 承载）。
+func (b *backend) issueResponse(entry *cacheEntry, key, account, role, kvPath string) *logical.Response {
 	data := map[string]interface{}{
 		"common_name":     entry.CN,
 		"domains":         entry.Domains,
@@ -232,9 +236,19 @@ func (b *backend) issueResponse(entry *cacheEntry, key, account, kvPath string) 
 		data["output_path"] = kvPath
 	}
 	resp := &logical.Response{Data: data}
-	resp.Secret = &logical.Secret{InternalData: map[string]interface{}{
-		"account":   account,
-		"cache_key": key,
-	}}
+	resp.Secret = &logical.Secret{
+		LeaseOptions: logical.LeaseOptions{
+			// core 依响应里的 Renewable 建 lease；为 false 则 lease 不可续、
+			// certRenew 永不触发。TTL 留空由 core 套默认租期，MaxTTL 随后
+			// 在 respondWithCert 中绑定证书剩余寿命。
+			Renewable: true,
+		},
+		InternalData: map[string]interface{}{
+			"secret_type": secretCertType,
+			"account":     account,
+			"cache_key":   key,
+			"role":        role,
+		},
+	}
 	return resp
 }
