@@ -113,3 +113,50 @@ func TestAccountInvalidKeyType(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resp.IsError())
 }
+
+// 部分更新（仅传未提及字段之外的字段）不得重置 bool 字段：
+// insecure_tls 被静默重置 false 会让依赖自签 CA 的账户后续操作 TLS 失败。
+func TestAccountPartialUpdatePreservesBools(t *testing.T) {
+	env := startPebble(t)
+	b, storage := testBackend(t, NewFakeCredentialLoader(nil))
+	ctx := context.Background()
+
+	// 创建：insecure_tls=true / terms_of_service_agreed=true（pebble 自签场景）
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "accounts/le",
+		Storage: storage, Data: accountData(env.DirURL),
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "create: %v", resp)
+
+	// 部分更新：仅改 contact，不传 insecure_tls/terms_of_service_agreed
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "accounts/le",
+		Storage: storage, Data: map[string]interface{}{"contact": "part@example.com"},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "partial update: %v", resp)
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "accounts/le", Storage: storage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "part@example.com", resp.Data["contact"])
+	// 未提及的 bool 字段保留旧值
+	require.Equal(t, true, resp.Data["insecure_tls"])
+	require.Equal(t, true, resp.Data["terms_of_service_agreed"])
+
+	// 显式传 terms_of_service_agreed=true 允许覆盖（GetOk 对显式值返回 ok=true）。
+	// insecure_tls=true 保留生效，同 CA UpdateRegistration 可达 pebble。
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "accounts/le",
+		Storage: storage, Data: map[string]interface{}{"terms_of_service_agreed": true},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "tos update: %v", resp)
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "accounts/le", Storage: storage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, true, resp.Data["terms_of_service_agreed"])
+}

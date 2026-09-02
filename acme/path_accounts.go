@@ -135,8 +135,14 @@ func (b *backend) pathAccountWrite(ctx context.Context, req *logical.Request, d 
 	} else if existing == nil {
 		return logical.ErrorResponse("contact 必填"), nil
 	}
-	entry.TOSAgreed = d.Get("terms_of_service_agreed").(bool)
-	entry.InsecureTLS = d.Get("insecure_tls").(bool)
+	// bool 字段仅在请求中显式出现时覆盖（GetOk 对显式 false 也返回 ok=true，
+	// 允许显式改回 false）；未提及则保留旧值，避免部分更新静默重置。
+	if v, ok := d.GetOk("terms_of_service_agreed"); ok {
+		entry.TOSAgreed = v.(bool)
+	}
+	if v, ok := d.GetOk("insecure_tls"); ok {
+		entry.InsecureTLS = v.(bool)
+	}
 	if refs, ok := d.GetOk("dns_providers"); ok {
 		if err := decodeDNSProviderRefs(refs, &entry.DNSProviders); err != nil {
 			return logical.ErrorResponse("dns_providers 解析失败: %v", err), nil
