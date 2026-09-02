@@ -2,8 +2,11 @@ package acme
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openbao/openbao/api/v2"
 	"github.com/openbao/openbao/sdk/v2/logical"
@@ -56,6 +59,14 @@ func (b *backend) writeCertOutput(ctx context.Context, req *logical.Request, rol
 		"private_key": entry.PrivateKeyPEM,
 		"issuer_cert": entry.IssuerCertificatePEM,
 		"domains":     entry.Domains,
+	}
+	// 解析失败时省略 not_before/not_after 但不阻断证书输出：证书本体是
+	// 主要交付物，fail-open 与 certNeedsRenewal 的保守策略语义对齐。
+	if block, _ := pem.Decode([]byte(entry.CertificatePEM)); block != nil {
+		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+			data["not_before"] = cert.NotBefore.UTC().Format(time.RFC3339)
+			data["not_after"] = cert.NotAfter.UTC().Format(time.RFC3339)
+		}
 	}
 	if err := b.kvWriter.Write(ctx, req.ClientToken, role.OutputKVMount, path, data); err != nil {
 		return "", err

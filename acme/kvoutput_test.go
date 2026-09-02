@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/stretchr/testify/require"
@@ -49,10 +50,14 @@ func TestWriteCertOutput(t *testing.T) {
 	require.Equal(t, "", path)
 	require.Empty(t, w.writes)
 
-	// 配置后写入
+	// 配置后写入：证书用有效 PEM 夹具，以断言 not_before/not_after
+	// （整秒 UTC 时间，避免 RFC3339 截断亚秒导致断言歧义）
+	notBefore := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	notAfter := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+	certPEM := selfSignedCertFor(t, notBefore, notAfter)
 	path, err = b.writeCertOutput(context.Background(), &logical.Request{ClientToken: "tok"},
 		"web", &roleEntry{OutputKVMount: "kv-certs"}, "*.example.com",
-		&cacheEntry{CertificatePEM: "C", PrivateKeyPEM: "K", IssuerCertificatePEM: "I",
+		&cacheEntry{CertificatePEM: certPEM, PrivateKeyPEM: "K", IssuerCertificatePEM: "I",
 			Domains: []string{"*.example.com"}})
 	require.NoError(t, err)
 	require.Equal(t, "certs/web/_wildcard.example.com", path)
@@ -60,10 +65,21 @@ func TestWriteCertOutput(t *testing.T) {
 	// 传递调用者 token
 	require.Equal(t, "tok", w.writes[0].clientToken)
 	require.Equal(t, "kv-certs", w.writes[0].mount)
-	require.Equal(t, "C", w.writes[0].data["certificate"])
+	require.Equal(t, certPEM, w.writes[0].data["certificate"])
 	require.Equal(t, "K", w.writes[0].data["private_key"])
 	require.Equal(t, "I", w.writes[0].data["issuer_cert"])
 	require.Equal(t, []string{"*.example.com"}, w.writes[0].data["domains"])
+	// 有效期：RFC3339 可解析且等于夹具证书的 NotBefore/NotAfter（UTC）
+	nb, ok := w.writes[0].data["not_before"].(string)
+	require.True(t, ok, "not_before 须为 RFC3339 字符串")
+	na, ok := w.writes[0].data["not_after"].(string)
+	require.True(t, ok, "not_after 须为 RFC3339 字符串")
+	parsedNB, err := time.Parse(time.RFC3339, nb)
+	require.NoError(t, err)
+	parsedNA, err := time.Parse(time.RFC3339, na)
+	require.NoError(t, err)
+	require.True(t, parsedNB.Equal(notBefore), "not_before=%s 须等于夹具 NotBefore", nb)
+	require.True(t, parsedNA.Equal(notAfter), "not_after=%s 须等于夹具 NotAfter", na)
 }
 
 // newKVPutServer 模拟 KVv2 Put 端点（/v1/{mount}/data/{path}），
