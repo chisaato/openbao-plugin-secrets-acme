@@ -289,7 +289,7 @@ func TestIssueSingleflightWaitersRefcount(t *testing.T) {
 			resp, err := b.HandleRequest(ctx, &logical.Request{
 				Operation: logical.CreateOperation, Path: "certs/web",
 				Storage: storage, ClientToken: "test-token",
-				Data: map[string]interface{}{"common_name": "example.com"},
+				Data: map[string]interface{}{"common_name": "example.com", "sync": true},
 			})
 			results <- result{resp, err}
 		}()
@@ -384,7 +384,7 @@ func TestIssueSkipsPropagationCheckViaDNSProvider(t *testing.T) {
 	resp, err := b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.CreateOperation, Path: "certs/web",
 		Storage: storage, ClientToken: "test-token",
-		Data: map[string]interface{}{"common_name": "example.com"},
+		Data: map[string]interface{}{"common_name": "example.com", "sync": true},
 	})
 	require.NoError(t, err)
 	require.False(t, resp != nil && resp.IsError(), "签发应成功: %v", resp)

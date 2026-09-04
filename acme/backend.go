@@ -55,6 +55,7 @@ func paths(b *backend) []*framework.Path {
 	paths := append(pathDNSProviders(b), pathAccounts(b)...)
 	paths = append(paths, pathRoles(b)...)
 	paths = append(paths, pathCerts(b)...)
+	paths = append(paths, pathJobs(b)...)
 	return append(paths, pathCache(b)...)
 }
 

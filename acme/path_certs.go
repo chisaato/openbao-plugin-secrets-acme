@@ -152,7 +152,13 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 		return resp, nil
 	}
 
-	// 2) singleflight 防并发同 key 重复签发。executed 标记本调用者是否为
+	// 1.8) 默认异步：挂靠同 (role, domains) 的未完成 job，或创建新 job 由
+	//      后台 Worker 驱动（spec §3）。validateNames/account 校验已前置完成。
+	if !d.Get("sync").(bool) {
+		return b.submitJob(ctx, req, roleName, role, cn, domains)
+	}
+
+	// 2) sync=true：v0.1.0 同步契约。singleflight 防并发同 key 重复签发。executed 标记本调用者是否为
 	//    领导者（闭包内设置，等待者经 WaitGroup happens-before 可见）：
 	//    领导者的 lease 引用即 doIssue 写入的初始 Users=1；等待者共享同一
 	//    响应并各自建 lease，返回前须经 waiterRefAdd 补自增，否则任一 lease

@@ -70,7 +70,7 @@ func TestIssuePathValidation(t *testing.T) {
 	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.CreateOperation, Path: "certs/web",
 		Storage: storage,
-		Data:    map[string]interface{}{"common_name": "example.com"},
+		Data:    map[string]interface{}{"common_name": "example.com", "sync": true},
 	})
 	require.NoError(t, err)
 	require.True(t, resp.IsError())
@@ -90,7 +90,7 @@ func TestIssuePathValidation(t *testing.T) {
 	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.CreateOperation, Path: "certs/any-role",
 		Storage: storage,
-		Data:    map[string]interface{}{"common_name": "arbitrary.domain.org"},
+		Data:    map[string]interface{}{"common_name": "arbitrary.domain.org", "sync": true},
 	})
 	require.NoError(t, err)
 	require.True(t, resp.IsError())
@@ -145,7 +145,7 @@ func TestIssueWithFakeProvider(t *testing.T) {
 	resp, err := b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.CreateOperation, Path: "certs/web",
 		Storage: storage, ClientToken: "test-token",
-		Data: map[string]interface{}{"common_name": "example.com"},
+		Data: map[string]interface{}{"common_name": "example.com", "sync": true},
 	})
 	require.NoError(t, err)
 	require.True(t, resp.IsError()) // pebble DNS 校验失败（预期）
@@ -229,7 +229,7 @@ func TestDisableCacheRoleSkipsCachePut(t *testing.T) {
 		resp, err := b.HandleRequest(ctx, &logical.Request{
 			Operation: logical.CreateOperation, Path: "certs/web",
 			Storage: storage, ClientToken: "test-token",
-			Data: map[string]interface{}{"common_name": "example.com"},
+			Data: map[string]interface{}{"common_name": "example.com", "sync": true},
 		})
 		require.NoError(t, err)
 		require.False(t, resp.IsError(), "%s 应成功: %v", stage, resp)
@@ -401,7 +401,7 @@ func TestIssueKVFailureDropsCacheEntry(t *testing.T) {
 	resp, err := b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.CreateOperation, Path: "certs/web",
 		Storage: storage, ClientToken: "test-token",
-		Data: map[string]interface{}{"common_name": "example.com"},
+		Data: map[string]interface{}{"common_name": "example.com", "sync": true},
 	})
 	require.NoError(t, err)
 	require.True(t, resp.IsError())
@@ -459,7 +459,7 @@ func TestIssueCoverageReuse(t *testing.T) {
 	require.NoError(t, err)
 	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.CreateOperation, Path: "certs/noreuse", Storage: storage,
-		Data: map[string]interface{}{"common_name": "sub.example.com"},
+		Data: map[string]interface{}{"common_name": "sub.example.com", "sync": true},
 	})
 	require.NoError(t, err)
 	require.True(t, resp.IsError(), "disable_cert_reuse 应跳过复用")
@@ -484,7 +484,7 @@ func TestDoIssueSetsRoleField(t *testing.T) {
 	_, err := b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.CreateOperation, Path: "certs/web", Storage: storage,
 		ClientToken: "test-token",
-		Data:        map[string]interface{}{"common_name": "example.com"},
+		Data:        map[string]interface{}{"common_name": "example.com", "sync": true},
 	})
 	require.NoError(t, err)
 
