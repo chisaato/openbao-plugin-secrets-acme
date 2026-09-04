@@ -11,7 +11,7 @@ OpenBao 的 ACME secrets engine，基于 [lego v5](https://github.com/go-acme/le
 
 ## 1. 安装方式 A：传统 `plugin_directory`
 
-1. 将对应平台的二进制（[Releases](../../releases) 下载，或 `make build` 自建）放到 OpenBao 服务器的插件目录，例如 `/etc/openbao/plugins/`：
+1. 将对应平台的二进制（[Releases](../../releases) 下载，或 `just build` 自建）放到 OpenBao 服务器的插件目录，例如 `/etc/openbao/plugins/`：
 
    ```sh
    sudo install -m 0755 openbao-plugin-secrets-acme_linux_amd64 \
@@ -95,6 +95,20 @@ Environment="BAO_TOKEN=<插件服务身份 token>"
 
 > 建议：服务身份 token 使用专用 policy + 定期轮换；不要复用人类或应用的 token。
 
+### 3.1 服务身份 token 自动续期（renew-self）
+
+插件启动时会以 `BAO_TOKEN` 身份对自身 token 调用一次 `auth/token/renew-self`，之后周期性续期（间隔 = 返回 TTL 的一半，下限 1 分钟；失败按指数退避 5min→30min 重试，不影响签发服务）。**renew-self 只延长过期时间、不改变 token 字符串**（服务端原 entry 持久化续期），因此环境变量里的值终身有效，无须轮换进程 env。
+
+推荐给插件签发 **periodic token**（配合 orphan，不随父 token 过期；勿配 explicit-max-ttl，否则周期续期仍会被硬上限截断）：
+
+```sh
+bao token create -policy=acme-plugin -orphan -period=720h
+```
+
+- token 需包含 `auth/token/renew-self` 的 `update` 权限（默认 token 策略已含 `self` 路径，自定义收权时注意保留）。
+- 设 `BAO_TOKEN_RENEW_DISABLE=1`（非空且非 `0`/`false` 均可）可完全关闭内置续期（已用外部机制续期、或本地 root token 测试时）。
+- 本地测试用 root token 时，启动日志会出现「token 无 TTL，无需自动续期，停止续期循环」的**警告属预期**——root token 不可续期。
+
 ## 4. 快速上手
 
 以下示例中 `<...>` 均为占位符，请替换为你的真实值。
@@ -154,17 +168,32 @@ bao write acme/roles/web \
   output_kv_mount=certs
 ```
 
-- `validateNames` 语义：`*.example.com`（通配）按裸域口径放行；其余裸域需 `allow_bare_domains`，子域需 `allow_subdomains`，白名单外一律拒绝。
+- `validateNames` 语义：`allow_any_name=true` 时放行任意域名（无需配置 `allowed_domains`）；否则按白名单校验，`*.example.com`（通配）按裸域口径放行，其余裸域需 `allow_bare_domains`，子域需 `allow_subdomains`，白名单外一律拒绝。
 - `cache_for_ratio` ∈ (0,100]，默认 70：剩余寿命低于总寿命 70% 时触发重签（见「缓存与 lease」）。
 - `output_kv_mount`：非空时签发结果同步写到该 KVv2 mount 的 `certs/{role}/{cn}` 路径（通配 CN 的 `*.` 前缀映射为 `_wildcard.`，`/` 映射为 `_`）；留空则不输出。
+- `disable_cert_reuse`：默认 false。开启后该 role 不参与 account 级证书覆盖复用（见 §4.5「证书复用」）。
 
 ### 4.5 签发证书
 
 ```sh
-bao write -field=certificate acme/certs/web common_name=www.example.com
+# 默认异步：立即返回 job_id，由插件后台完成 DNS01 挑战与签发
+bao write -field=job_id acme/certs/web common_name=www.example.com
+
+# 轮询任务：completed 时响应含证书结果
+bao read acme/jobs/<job_id>
+
+# 同步兼容（v0.1.0 行为：阻塞至签发完成，响应带 renewable lease）
+bao write -field=certificate acme/certs/web common_name=www.example.com sync=true
 ```
 
-响应字段：`certificate`（PEM bundle）、`private_key`、`issuer_cert`、`common_name`、`domains`、`url`、`cert_stable_url`、`not_before`、`not_after`，以及配置了 KV 输出时的 `output_path`（**缓存命中不重写 KV**，`output_path` 指向签发时写入的数据）。响应是一个 renewable lease（TTL 上限为证书剩余寿命）。
+**异步任务（默认）**：`POST acme/certs/<role>` 未携带 `sync=true` 时立即返回 `job_id`/`status`/`poll_path`（不建 lease）。任务状态持久化，**插件重启（unseal/进程重启）后自动重新驱动未完成的 job**；失败不自动重试，重新提交即可。
+
+- `bao read acme/jobs/<job_id>`：`status`（pending/processing/completed/failed）、`error`、提交信息；completed 时平铺 `certificate`/`private_key`/`issuer_cert`/`url`/`not_before`/`not_after`/`output_path`。**该读取路径不建 lease**——lease 生命周期（续期/撤销）仅绑定在 `sync=true` 的签发响应上。
+- `bao list acme/jobs/`：列出全部任务；`bao delete acme/jobs/<job_id>`：删除任务（仅 completed/failed 可删）。
+
+**同步响应（`sync=true` 与缓存/复用命中共用）**：`certificate`（PEM bundle）、`private_key`、`issuer_cert`、`common_name`、`domains`、`url`、`cert_stable_url`、`not_before`、`not_after`，以及配置了 KV 输出时的 `output_path`（**缓存命中不重写 KV**，`output_path` 指向签发时写入的数据）。响应是一个 renewable lease（TTL 上限为证书剩余寿命）。缓存/复用命中额外带 `reused: true`。
+
+**证书复用（account 级）**：提交签发前会先在同 account 的已签发且未到期证书中查找能**覆盖全部请求域名**的条目，命中即同步返回该证书（同 lease 语义、`Users` 引用计数 +1、响应带 `reused: true`），不再重复向 CA 提单——Let's Encrypt 的速率配额按 account 计，此举可显著降低重复签发消耗。覆盖规则遵循通配符单标签语义：`*.example.com` 覆盖 `sub.example.com` 与精确的 `*.example.com`，**不覆盖**裸域 `example.com` 与多级子域 `a.b.example.com`（这两类仍走正常签发）。
 
 ## 5. 凭据模型
 
@@ -184,7 +213,7 @@ bao write -field=certificate acme/certs/web common_name=www.example.com
 
 | 身份 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
-| 签发调用者 | `acme/certs/*` | `create`/`update` | 签发入口；**无需任何 KV 权限** |
+| 签发调用者 | `acme/certs/*`、`acme/jobs/*` | `create`/`update`/`read`/`delete`/`list`（jobs） | 签发入口与任务查询；**无需任何 KV 权限** |
 | 签发调用者 | `acme/*` 其余 | 无 | dns-providers/accounts/roles/cache 均为管理面 |
 | 插件服务身份（`BAO_TOKEN`） | 凭据 KV 路径（如 `secret/data/dns/*`） | `read` | 实时读取 DNS 凭据 |
 | 插件服务身份 | 输出 KV 路径（如 `certs/data/*`） | `create`/`update` | 证书 KV 输出 |
@@ -196,6 +225,10 @@ bao write -field=certificate acme/certs/web common_name=www.example.com
 ```hcl
 path "acme/certs/*" {
   capabilities = ["create", "update"]
+}
+
+path "acme/jobs/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
 }
 ```
 
@@ -236,12 +269,14 @@ bao write acme/dns-providers/mydns-exec \
 
 ## 9. 开发
 
+构建入口为 [just](https://github.com/casey/just)（`just --list` 查看全部目标）：
+
 ```sh
-make build      # 构建 bin/openbao-plugin-secrets-acme（ldflags 注入 acme.Version）
-make test       # 单测（-race），离线
-make testacc    # 验收测试（test/ 独立 module，需本机 pebble + challtestsrv + bao；缺失则自动 Skip）
-make vet
-make release    # 交叉编译全部平台到 dist/ 并生成 SHA256SUMS
+just build      # 构建 bin/openbao-plugin-secrets-acme（ldflags 注入 acme.Version）
+just test       # 单测（-race），离线
+just testacc    # 验收测试（test/ 独立 module，需本机 pebble + challtestsrv + bao；缺失则自动 Skip）
+just vet
+just release    # 交叉编译全部平台到 dist/ 并生成 SHA256SUMS
 ```
 
 本地端到端验收需要 pebble（本地 ACME 测试 CA）与 challtestsrv（DNS 模拟器）。challtestsrv 自 pebble v2 主模块拆出，须用 v2 子路径安装，并固定与验收 fixture 一致的版本：

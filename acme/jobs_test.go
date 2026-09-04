@@ -311,3 +311,49 @@ func TestResumeJobsOnInitialize(t *testing.T) {
 	require.NotNil(t, b.Clean)
 	b.Clean(ctx)
 }
+
+// TestE2EAsyncIssuanceAndReuse（pebble，缺失 Skip）：异步提交→轮询→取证；
+// 泛域名签发后单域请求覆盖复用（spec §5 端到端）。
+func TestE2EAsyncIssuanceAndReuse(t *testing.T) {
+	b, storage, _ := setupObtainable(t)
+	ctx := context.Background()
+	// 关闭 fake 注入，走真实 Obtain（setupObtainable 未注入 issueFn，显式置空防呆）
+	b.issueFn = nil
+
+	// 1) 异步签发 *.example.com（role 允许子域/裸域，泛域名按 bare 语义放行）
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/web", Storage: storage,
+		ClientToken: "test-token",
+		Data:        map[string]interface{}{"common_name": "*.example.com"},
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError(), "异步提交应成功: %v", resp)
+	require.NotEmpty(t, resp.Data["job_id"])
+	jobID := resp.Data["job_id"].(string)
+
+	done := waitForJob(t, b, storage, jobID)
+	require.Equal(t, jobCompleted, done.Status, "error: %s", done.Error)
+	require.NotEmpty(t, done.Cert.CertificatePEM)
+
+	// 2) 同 account 单域请求 → 覆盖复用（同步返回，不新建 job）
+	resp2, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/web", Storage: storage,
+		ClientToken: "test-token",
+		Data:        map[string]interface{}{"common_name": "sub.example.com"},
+	})
+	require.NoError(t, err)
+	require.False(t, resp2.IsError(), "覆盖复用应成功: %v", resp2)
+	require.Equal(t, true, resp2.Data["reused"])
+	require.Equal(t, done.Cert.CertificatePEM, resp2.Data["certificate"],
+		"复用返回的应正是泛域名证书")
+
+	// 3) sync=true 单域请求：复用先行，同样命中（sync 只影响未命中时的行为）
+	resp3, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/web", Storage: storage,
+		ClientToken: "test-token",
+		Data:        map[string]interface{}{"common_name": "other.example.com", "sync": true},
+	})
+	require.NoError(t, err)
+	require.False(t, resp3.IsError())
+	require.Equal(t, true, resp3.Data["reused"])
+}

@@ -153,7 +153,7 @@ func startBaoDev(t *testing.T) *api.Client {
 	require.NoError(t, os.MkdirAll(pluginDir, 0o755))
 	binPath := filepath.Join(pluginDir, pluginName)
 
-	// 与 Makefile build 相同的 ldflags：Version 必须是 v 前缀 SemVer。
+	// 与 justfile build 相同的 ldflags：Version 必须是 v 前缀 SemVer。
 	build := exec.Command(goBin, "build",
 		"-ldflags", "-X github.com/chisaato/openbao-plugin-secrets-acme/acme.Version="+pluginVer,
 		"-o", binPath, "./cmd/plugin")
@@ -359,7 +359,7 @@ func TestAcceptanceFullPipeline(t *testing.T) {
 	// 版本断言（MountOutput 直接暴露 plugin_version/running_plugin_version）：
 	// PluginVersion 是 mount 时声明的版本；RunningVersion 是插件进程自报的
 	// 运行版本（Factory 将 ldflags 注入的 acme.Version 设为 RunningVersion）
-	// ——两者都等于 v0.1.0 即验证了 make build 的 ldflags 注入链路。
+	// ——两者都等于 v0.1.0 即验证了 just build 的 ldflags 注入链路。
 	// 注意：不要读 Options["version"]——server mount 后把 version option
 	// 提升为 plugin_version 并从 Options 移除（OpenBao 2.x 行为，实测确认）；
 	// 也不要比对 test module 里的 acme.Version——独立编译无 ldflags，恒 "dev"。
@@ -430,7 +430,7 @@ func TestAcceptanceFullPipeline(t *testing.T) {
 	})
 
 	// ---- 签发 + KV 输出 ----
-	issue1, err := client.Logical().Write("acme/certs/web", map[string]any{"common_name": "example.com"})
+	issue1, err := client.Logical().Write("acme/certs/web", map[string]any{"common_name": "example.com", "sync": true})
 	require.NoError(t, err, "首次签发失败")
 	require.NotNil(t, issue1)
 	certPEM1, _ := issue1.Data["certificate"].(string)
@@ -448,7 +448,7 @@ func TestAcceptanceFullPipeline(t *testing.T) {
 	require.Equal(t, []any{"example.com"}, kv.Data["domains"])
 
 	// ---- 二次签发：缓存命中（同 cert url）----
-	issue2, err := client.Logical().Write("acme/certs/web", map[string]any{"common_name": "example.com"})
+	issue2, err := client.Logical().Write("acme/certs/web", map[string]any{"common_name": "example.com", "sync": true})
 	require.NoError(t, err, "二次签发失败")
 	require.NotNil(t, issue2)
 	require.Equal(t, issue1.Data["url"], issue2.Data["url"], "二次签发应命中缓存（同 cert url）")

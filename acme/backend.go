@@ -75,7 +75,7 @@ type backend struct {
 	// apiTokenAuthClient，测试注入 fake 以拦截真实网络调用。
 	renewClient tokenAuthClient
 	issueGroup  singleflight.Group
-	cacheMu    sync.RWMutex
+	cacheMu     sync.RWMutex
 	// issueFn 非空时替代真实 ACME Obtain（仅测试注入，仿 credLoader 模式）。
 	issueFn func(ctx context.Context, req *logical.Request, account *accountEntry, domains []string) (*certificate.Resource, error)
 	// jobMu/runningJobs：本进程内 job 单驱动防护（spec §8）。
