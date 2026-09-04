@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/api"
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
@@ -18,14 +19,16 @@ import (
 
 const storageKeyJobs = "jobs/"
 
-type jobStatus string
+type jobStatus = api.JobStatus
 
 const (
-	jobPending    jobStatus = "pending"
-	jobProcessing jobStatus = "processing"
-	jobCompleted  jobStatus = "completed"
-	jobFailed     jobStatus = "failed"
+	jobPending    = api.JobPending
+	jobProcessing = api.JobProcessing
+	jobCompleted  = api.JobCompleted
+	jobFailed     = api.JobFailed
 )
+
+type jobCertSnapshot = api.JobCertSnapshot
 
 // jobEntry：异步签发任务（spec §4.1）。私钥/证书快照与 cache/ 条目同级别
 // （storage barrier 加密），无新增暴露面。
@@ -42,19 +45,6 @@ type jobEntry struct {
 	CreatedAt time.Time        `json:"created_at"`
 	UpdatedAt time.Time        `json:"updated_at"`
 	Cert      *jobCertSnapshot `json:"cert,omitempty"`
-}
-
-// jobCertSnapshot：completed 时的结果快照；缓存条目被淘汰/撤销后 GET jobs
-// 仍可取回（spec §4.1）。
-type jobCertSnapshot struct {
-	CertificatePEM string `json:"certificate"`
-	PrivateKeyPEM  string `json:"private_key"`
-	IssuerCertPEM  string `json:"issuer_cert"`
-	CertURL        string `json:"url"`
-	CertStableURL  string `json:"cert_stable_url"`
-	NotBefore      string `json:"not_before,omitempty"`
-	NotAfter       string `json:"not_after,omitempty"`
-	OutputPath     string `json:"output_path,omitempty"`
 }
 
 // newJobID：crypto/rand 16 字节 hex（无外部依赖）。

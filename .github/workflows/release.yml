@@ -15,9 +15,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
+      - uses: extractions/setup-just@v4
 
       # 交叉编译全部平台（dist/）+ 本机 linux/amd64 构建（bin/，供镜像 COPY）+ SHA256SUMS
-      - run: make release
+      - run: just release
 
       - name: Upload binaries to GitHub Release
         uses: softprops/action-gh-release@v2

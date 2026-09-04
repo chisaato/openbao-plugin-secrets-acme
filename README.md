@@ -267,12 +267,46 @@ bao write acme/dns-providers/mydns-exec \
 - 默认（非 RAW）模式：lego v5 exec 以 argv 调用脚本——`<script> present <fqdn> <value>` / `<script> cleanup <fqdn> <value>`，`fqdn` 形如 `_acme-challenge.example.com.`（带尾点）。仓库内 `test/acme-dns.sh` 是一个可参考的完整适配脚本。
 - `EXEC_MODE=RAW`：脚本按 argv 收到 `domain/token/keyAuth` 原文，自行推导 TXT 记录。
 
-## 9. 开发
+## 9. 快捷运维 CLI (bao-acme)
+
+为简化日常对 ACME 插件的配置与证书签发，项目提供了基于 Cobra 的专用 CLI 工具 `bao-acme`（已包含在 `just build` 中生成至 `bin/bao-acme`）。
+
+### 常用命令
+
+```sh
+# 1. 配置 DNS Provider
+bao-acme provider set alidns --type alidns --cred-mount secret --cred-path dns/ali
+
+# 2. 注册 ACME 账户
+bao-acme account register my-account \
+  --server-url https://acme-v02.api.letsencrypt.org/directory \
+  --contact mailto:admin@example.com \
+  --provider alidns
+
+# 3. 制定签发 Role
+bao-acme role set default \
+  --account my-account \
+  --allowed-domains example.com \
+  --allow-bare --allow-sub
+
+# 4. 签发证书 (默认异步提交并在终端自动轮询等待结果，直存本地)
+bao-acme cert issue default --cn example.com --alt "*.example.com" \
+  --out-cert cert.pem --out-key key.pem
+
+# 5. 查看与清理 Job
+bao-acme job list
+bao-acme job get <job_id>
+bao-acme job delete <job_id>
+```
+
+全局支持环境变量 `BAO_ADDR`、`BAO_TOKEN`、`ACME_MOUNT` 以及 `--format=json`。
+
+## 10. 开发
 
 构建入口为 [just](https://github.com/casey/just)（`just --list` 查看全部目标）：
 
 ```sh
-just build      # 构建 bin/openbao-plugin-secrets-acme（ldflags 注入 acme.Version）
+just build      # 构建 bin/openbao-plugin-secrets-acme 与 bin/bao-acme
 just test       # 单测（-race），离线
 just testacc    # 验收测试（test/ 独立 module，需本机 pebble + challtestsrv + bao；缺失则自动 Skip）
 just vet

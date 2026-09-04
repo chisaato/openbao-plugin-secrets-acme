@@ -63,7 +63,41 @@ docker compose exec -T -e BAO_ADDR -e BAO_TOKEN bao bao kv put secret/dns/cf \
   CLOUDFLARE_DNS_API_TOKEN=<your-token>
 ```
 
-用 HTTP API 配置嵌套结构（`credentials_ref` 等）比 CLI 方便：
+你可以直接使用项目内置的快捷 CLI 工具 `bin/bao-acme`（底层封装标准 API），也可继续使用原生 `curl`。
+
+### 方式 A：使用快捷 CLI (`bin/bao-acme`)
+
+```bash
+# 0. 编译插件与 CLI (生成 bin/openbao-plugin-secrets-acme 与 bin/bao-acme)
+just build
+
+# 1. 配置 DNS Provider
+bin/bao-acme provider set cf --type cloudflare --cred-mount secret --cred-path dns/cf
+
+# 2. 注册 ACME 账户并绑定 DNS Provider
+bin/bao-acme account register le-staging \
+  --server-url https://acme-staging-v02.api.letsencrypt.org/directory \
+  --contact you@example.com \
+  --provider cf
+
+# 3. 配置 Role 策略
+bin/bao-acme role set web \
+  --account le-staging \
+  --allowed-domains example.com \
+  --allow-bare --allow-sub
+
+# 4. 签发证书 (默认异步提交并在终端自动轮询等待结果，可直存本地文件)
+bin/bao-acme cert issue web --cn example.com --alt "*.example.com" \
+  --out-cert cert.pem --out-key key.pem
+
+# 查看任务列表与详情
+bin/bao-acme job list
+bin/bao-acme job get <job_id>
+```
+
+---
+
+### 方式 B：使用原生 curl
 
 ```bash
 # DNS provider（指向上面的 KV）

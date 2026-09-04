@@ -23,13 +23,16 @@ plugin_directory = "/openbao/plugins"
 plugin_auto_register = true
 
 # 声明式注册 ACME 插件（需 OpenBao >= 2.5.0）。首次使用前：
-#   1. make build
+#   1. just build
 #   2. sha256sum bin/openbao-plugin-secrets-acme → 填入 sha256sum
 #   3. cp bin/openbao-plugin-secrets-acme data/plugins/
 #   4. bao operator init 得到 root token 后，填入下方 BAO_TOKEN
 #      （本地测试直接用 root token；生产请改用最小权限服务身份，见 README §3）
 #
-# 注意：version 必须与插件自报的 RunningVersion 一致——make build 用
+# 插件默认会对 BAO_TOKEN 自动 renew-self；root token 不可续期，启动时会打
+# 一条「停止续期循环」警告属预期。不想看到可在此 env 数组加一行：
+#   "BAO_TOKEN_RENEW_DISABLE=1",
+# 注意：version 必须与插件自报的 RunningVersion 一致——just build 用
 # git describe 注入（当前 v0.1.0）；升级版本时同步改这里。
 plugin "secret" "acme" {
   command   = "openbao-plugin-secrets-acme"

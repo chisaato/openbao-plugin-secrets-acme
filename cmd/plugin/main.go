@@ -9,7 +9,7 @@ import (
 	"github.com/openbao/openbao/sdk/v2/plugin"
 )
 
-// 版本自报经 acme.Version（由 Makefile ldflags 注入，v 前缀 SemVer），
+// 版本自报经 acme.Version（由 justfile ldflags 注入，v 前缀 SemVer），
 // 由 Factory 设置 framework.Backend.RunningVersion。
 func main() {
 	apiClientMeta := &api.PluginAPIClientMeta{}
