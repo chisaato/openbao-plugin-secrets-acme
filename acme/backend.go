@@ -44,6 +44,9 @@ func Backend(conf *logical.BackendConfig) (*backend, error) {
 	}
 	b.RunningVersion = Version
 	b.runningJobs = make(map[string]struct{})
+	// 重启恢复入口：Factory（生产）挂载后由 core 调用 Initialize；直接调用
+	// Backend() 的单测路径无人调 Initialize，保持零影响（spec §8）。
+	b.InitializeFunc = b.initializeBackend
 	b.Paths = paths(b)
 	// 证书 secret 的 Renew/Revoke 回调需要 *backend，故按实例绑定注册。
 	b.Secrets = []*framework.Secret{secretCertFor(b)}

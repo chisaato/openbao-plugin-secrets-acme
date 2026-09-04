@@ -272,3 +272,42 @@ func TestIssueSyncTrueCompat(t *testing.T) {
 	require.NotNil(t, resp.Secret, "同步响应须建 lease")
 	require.Empty(t, resp.Data["job_id"])
 }
+
+// TestResumeJobsOnInitialize：pending/processing job 在 Initialize 时被重新
+// 驱动至终态；completed/failed 不受影响（spec §8）。
+func TestResumeJobsOnInitialize(t *testing.T) {
+	b, storage, ctx := jobFixture(t)
+
+	for _, tc := range []struct {
+		id string
+		st jobStatus
+	}{
+		{"r-pending", jobPending}, {"r-processing", jobProcessing},
+		{"r-done", jobCompleted}, {"r-failed", jobFailed},
+	} {
+		seedJob(t, b, ctx, storage, tc.id, tc.st)
+	}
+
+	require.NoError(t, b.initializeBackend(ctx, &logical.InitializationRequest{Storage: storage}))
+
+	for _, id := range []string{"r-pending", "r-processing"} {
+		done := waitForJob(t, b, storage, id)
+		require.Equal(t, jobCompleted, done.Status, "job %s 应恢复收敛", id)
+	}
+	// completed 的快照不被重驱动改写
+	item, err := storage.Get(ctx, storageKeyJobs+"r-done")
+	require.NoError(t, err)
+	var j jobEntry
+	require.NoError(t, item.DecodeJSON(&j))
+	require.Equal(t, "CERT", j.Cert.CertificatePEM, "completed 不得被重驱动")
+	// failed 保持终态
+	item, err = storage.Get(ctx, storageKeyJobs+"r-failed")
+	require.NoError(t, err)
+	var jf jobEntry
+	require.NoError(t, item.DecodeJSON(&jf))
+	require.Equal(t, jobFailed, jf.Status)
+
+	// Clean 链可调用（cancel 不 panic；renewer 的 prev Clean 为 nil 时也安全）
+	require.NotNil(t, b.Clean)
+	b.Clean(ctx)
+}

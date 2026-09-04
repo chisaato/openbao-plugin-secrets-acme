@@ -13,6 +13,9 @@ import (
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
 
+// resumeJobs 由 InitializeFunc（Backend 构造时设置）在挂载/重启后触发；
+// 直接调用 Backend() 的单测路径无人调 Initialize，恢复逻辑对既有测试零影响。
+
 const storageKeyJobs = "jobs/"
 
 type jobStatus string
@@ -284,6 +287,59 @@ func (b *backend) submitJob(ctx context.Context, req *logical.Request, roleName 
 	workerJob := *job
 	go b.runJob(b.workerCtx(), req.Storage, &workerJob)
 	return b.jobResponse(job), nil
+}
+
+// initializeBackend：挂载/重启（unseal 后 backend 重建）时恢复未完成 job
+// （spec §8）。role/account 若已被删除，Worker 自然失败并落错误信息。
+func (b *backend) initializeBackend(ctx context.Context, req *logical.InitializationRequest) error {
+	b.startJobRunner(req.Storage)
+	return nil
+}
+
+// startJobRunner：创建长生命周期 ctx 并链式挂接 Clean（renewer 已占用
+// b.Clean，不得覆盖——先取 prev 再包装，卸载时两级都执行）。
+func (b *backend) startJobRunner(st logical.Storage) {
+	prev := b.Clean
+	ctx, cancel := context.WithCancel(context.Background())
+	b.jobCtx = ctx
+	b.Clean = func(c context.Context) {
+		cancel()
+		if prev != nil {
+			prev(c)
+		}
+	}
+	go b.resumeJobs(ctx, st)
+}
+
+// resumeJobs：扫描 jobs/ 并重新驱动全部未完成任务（完整重新 Obtain，
+// 不恢复 ACME order——spec §2/§8）。不做时长判定：失效配置由 Worker
+// 自然失败暴露。
+func (b *backend) resumeJobs(ctx context.Context, st logical.Storage) {
+	logger := b.Logger()
+	keys, err := st.List(ctx, storageKeyJobs)
+	if err != nil {
+		logger.Warn("job 恢复扫描失败", "error", err)
+		return
+	}
+	for _, k := range keys {
+		if ctx.Err() != nil {
+			return
+		}
+		item, err := st.Get(ctx, storageKeyJobs+k)
+		if err != nil || item == nil {
+			continue
+		}
+		var job jobEntry
+		if err := item.DecodeJSON(&job); err != nil {
+			logger.Warn("job 条目解码失败，跳过", "key", k, "error", err)
+			continue
+		}
+		if job.Status != jobPending && job.Status != jobProcessing {
+			continue
+		}
+		logger.Info("恢复未完成签发任务", "job_id", job.ID, "role", job.Role)
+		go b.runJob(ctx, st, &job)
+	}
 }
 
 func pathJobs(b *backend) []*framework.Path {
