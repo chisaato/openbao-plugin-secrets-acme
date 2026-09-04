@@ -17,17 +17,23 @@ type roleEntry struct {
 	AllowedDomains   []string `json:"allowed_domains"`
 	AllowBareDomains bool     `json:"allow_bare_domains"`
 	AllowSubdomains  bool     `json:"allow_subdomains"`
+	AllowAnyName     bool     `json:"allow_any_name"`
 	DisableCache     bool     `json:"disable_cache"`
+	DisableCertReuse bool     `json:"disable_cert_reuse"`
 	CacheForRatio    int      `json:"cache_for_ratio"`
 	OutputKVMount    string   `json:"output_kv_mount"`
 }
 
 // validateNames：通配符剥 "*." 后按 bare/sub 语义校验（含 PKI 语义一致性）。
 // "*.allowed 域" 视为对白名单域的通配引用直接放行；其余与裸域/子域规则一致。
+// 若 role.AllowAnyName 为 true，则跳过白名单及裸域/子域限制。
 func validateNames(cn string, alt []string, role *roleEntry) error {
 	for _, name := range append([]string{cn}, alt...) {
 		if name == "" {
 			return fmt.Errorf("域名为空")
+		}
+		if role.AllowAnyName {
+			continue
 		}
 		wildcard := strings.HasPrefix(name, "*.")
 		bare := strings.TrimPrefix(name, "*.")
@@ -79,10 +85,12 @@ func pathRoles(b *backend) []*framework.Path {
 	fields := map[string]*framework.FieldSchema{
 		"name":               {Type: framework.TypeString, Description: "role 名（certs/{role} 引用）。"},
 		"account":            {Type: framework.TypeString, Required: true, Description: "accounts/{name}。"},
-		"allowed_domains":    {Type: framework.TypeCommaStringSlice, Required: true, Description: "允许的域名（逗号分隔）。"},
+		"allowed_domains":    {Type: framework.TypeCommaStringSlice, Description: "允许的域名（逗号分隔）。"},
 		"allow_bare_domains": {Type: framework.TypeBool, Description: "允许裸域。"},
 		"allow_subdomains":   {Type: framework.TypeBool, Description: "允许子域。"},
+		"allow_any_name":     {Type: framework.TypeBool, Description: "允许任意域名签发（跳过 allowed_domains 校验）。"},
 		"disable_cache":      {Type: framework.TypeBool, Description: "禁用证书缓存（每次真签发）。"},
+		"disable_cert_reuse": {Type: framework.TypeBool, Description: "禁用 account 级证书覆盖复用（泛域名服务单域请求）。"},
 		"cache_for_ratio":    {Type: framework.TypeInt, Default: 70, Description: "剩余寿命低于总寿命该百分比时重签；(0,100]。"},
 		"output_kv_mount":    {Type: framework.TypeString, Description: "证书同步输出到该 KV mount（certs/{role}/{cn}）；空=不输出。"},
 	}
@@ -107,7 +115,9 @@ func pathRoles(b *backend) []*framework.Path {
 						"allowed_domains":    role.AllowedDomains,
 						"allow_bare_domains": role.AllowBareDomains,
 						"allow_subdomains":   role.AllowSubdomains,
+						"allow_any_name":     role.AllowAnyName,
 						"disable_cache":      role.DisableCache,
+						"disable_cert_reuse": role.DisableCertReuse,
 						"cache_for_ratio":    role.CacheForRatio,
 						"output_kv_mount":    role.OutputKVMount,
 					}}, nil
@@ -167,8 +177,11 @@ func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *fr
 	if ad, ok := d.GetOk("allowed_domains"); ok {
 		role.AllowedDomains = ad.([]string)
 	}
-	if existing == nil && len(role.AllowedDomains) == 0 {
-		return logical.ErrorResponse("allowed_domains 必填"), nil
+	if v, ok := d.GetOk("allow_any_name"); ok {
+		role.AllowAnyName = v.(bool)
+	}
+	if !role.AllowAnyName && len(role.AllowedDomains) == 0 {
+		return logical.ErrorResponse("allow_any_name 为 false 时 allowed_domains 必填"), nil
 	}
 	// bool 字段仅在请求中显式出现时覆盖（GetOk 对显式 false 也返回 ok=true，
 	// 允许显式改回 false）；未提及则保留旧值，避免部分更新静默重置。
@@ -181,6 +194,9 @@ func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *fr
 	}
 	if v, ok := d.GetOk("disable_cache"); ok {
 		role.DisableCache = v.(bool)
+	}
+	if v, ok := d.GetOk("disable_cert_reuse"); ok {
+		role.DisableCertReuse = v.(bool)
 	}
 	// cache_for_ratio 有 Default=70：未显式携带键时 GetOk ok=false，跳过以保留
 	// 旧值；显式携带时校验 (0,100]（Default 70 非零，显式传值恒可读到）。

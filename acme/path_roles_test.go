@@ -21,6 +21,10 @@ func TestValidateNames(t *testing.T) {
 
 	wrong := &roleEntry{AllowedDomains: []string{"other.com"}, AllowBareDomains: true, AllowSubdomains: true}
 	require.Error(t, validateNames("example.com", nil, wrong))
+
+	anyName := &roleEntry{AllowAnyName: true}
+	require.NoError(t, validateNames("example.com", []string{"foo.bar.org", "*.anywhere.io"}, anyName))
+	require.Error(t, validateNames("", nil, anyName)) // 空域名仍应被拦截
 }
 
 func TestRoleCRUD(t *testing.T) {
@@ -94,6 +98,38 @@ func TestRoleCRUD(t *testing.T) {
 		Operation: logical.DeleteOperation, Path: "roles/web", Storage: storage,
 	})
 	require.NoError(t, err)
+
+	// allow_any_name=true 时无需 allowed_domains
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "roles/any",
+		Storage: storage,
+		Data: map[string]interface{}{
+			"account":        "le",
+			"allow_any_name": true,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "create allow_any_name role: %v", resp)
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "roles/any", Storage: storage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, true, resp.Data["allow_any_name"])
+	require.Empty(t, resp.Data["allowed_domains"])
+
+	// allow_any_name=false 且未传 allowed_domains 时报错
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "roles/missing-domains",
+		Storage: storage,
+		Data: map[string]interface{}{
+			"account":        "le",
+			"allow_any_name": false,
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "allowed_domains")
 }
 
 // 部分更新不得静默重置 bool 字段：allow_bare_domains/allow_subdomains 被重置
@@ -183,4 +219,33 @@ func TestRolePartialUpdatePreservesBools(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, true, resp.Data["disable_cache"])
+}
+
+func TestRoleDisableCertReuseField(t *testing.T) {
+	b, storage := testBackend(t, NewFakeCredentialLoader(nil))
+	ctx := context.Background()
+
+	// 直写夹具（含 account），绕开 pathRoleWrite 的 account 存在性校验
+	putRoleFixture(t, ctx, storage, &roleEntry{
+		Account: "le", AllowedDomains: []string{"example.com"},
+		AllowBareDomains: true, CacheForRatio: 70, DisableCertReuse: true,
+	})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "roles/web", Storage: storage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, true, resp.Data["disable_cert_reuse"])
+
+	// 显式改回 false（GetOk 对显式 false 也返回 ok=true）
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "roles/web", Storage: storage,
+		Data: map[string]interface{}{"disable_cert_reuse": false},
+	})
+	require.NoError(t, err)
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "roles/web", Storage: storage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, false, resp.Data["disable_cert_reuse"])
 }

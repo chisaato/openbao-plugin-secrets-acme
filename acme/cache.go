@@ -28,6 +28,9 @@ type cacheEntry struct {
 	PrivateKeyPEM        string   `json:"private_key_pem"`
 	CertificatePEM       string   `json:"certificate_pem"`
 	IssuerCertificatePEM string   `json:"issuer_certificate_pem"`
+	// Role：签发时的 role 名。覆盖复用按 account 匹配的前提（spec §4.2）；
+	// 空值=旧条目，覆盖扫描跳过。
+	Role string `json:"role,omitempty"`
 }
 
 // cacheKey：sha256(roleJSON + 排序后 domains)，域名顺序无关。
