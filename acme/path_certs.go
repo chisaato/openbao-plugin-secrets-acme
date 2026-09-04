@@ -20,6 +20,7 @@ func pathCerts(b *backend) []*framework.Path {
 			"role":              {Type: framework.TypeString, Description: "role 名。"},
 			"common_name":       {Type: framework.TypeString, Required: true, Description: "主域名（可含通配符 *.）。"},
 			"alternative_names": {Type: framework.TypeCommaStringSlice, Description: "附加域名。"},
+			"sync":              {Type: framework.TypeBool, Description: "同步等待签发完成（v0.1.0 兼容）。默认 false：异步返回 job_id。"},
 		},
 		ExistenceCheck: func(ctx context.Context, req *logical.Request, d *framework.FieldData) (bool, error) {
 			role, err := b.getRole(ctx, req.Storage, d.Get("role").(string))
@@ -122,13 +123,33 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 			if err != nil {
 				return nil, err
 			}
-			resp, err := b.respondWithCert(ctx, req, roleName, role, entry, key, false)
+			resp, err := b.respondWithCert(ctx, req, roleName, role, entry, key, false, "")
 			if err != nil {
 				// 与新鲜签发路径一致：包装为错误响应（而非裸 error）。
 				return logical.ErrorResponse("签发失败: %v", err), nil
 			}
+			resp.Data["reused"] = true
 			return resp, nil
 		}
+	}
+
+	// 1.5) 覆盖复用：同 account 已签发证书覆盖全部请求域名 → 同步返回
+	// （spec §5）。命中语义与精确命中一致：Users++、不重写 KV、正常建 lease。
+	if reuseEntry, rkey, rerr := b.findReusableEntry(ctx, req.Storage, role, domains); rerr != nil {
+		return nil, rerr
+	} else if reuseEntry != nil {
+		if uerr := b.cacheUpdate(ctx, req.Storage, rkey, func(e *cacheEntry) *cacheEntry {
+			e.Users++
+			return e
+		}); uerr != nil {
+			return nil, uerr
+		}
+		resp, rerr := b.respondWithCert(ctx, req, roleName, role, reuseEntry, rkey, false, b.reuseKVPath(ctx, req.Storage, roleName, role, reuseEntry))
+		if rerr != nil {
+			return logical.ErrorResponse("签发失败: %v", rerr), nil
+		}
+		resp.Data["reused"] = true
+		return resp, nil
 	}
 
 	// 2) singleflight 防并发同 key 重复签发。executed 标记本调用者是否为
@@ -158,8 +179,12 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 	return resp, nil
 }
 
-// doIssue：路由→实时凭据→provider→Obtain→缓存→KV 输出→响应。
-func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, account *accountEntry, cn string, domains []string, key string) (*logical.Response, error) {
+// obtainCert：路由→实时凭据→provider→一次完整 ACME Obtain。issueFn 非空时
+// （测试注入）直接替代；错误文案与同步路径历史行为一致。
+func (b *backend) obtainCert(ctx context.Context, req *logical.Request, account *accountEntry, domains []string) (*certificate.Resource, error) {
+	if b.issueFn != nil {
+		return b.issueFn(ctx, req, account, domains)
+	}
 	router, extraOpts, err := b.buildRoutes(ctx, req, account)
 	if err != nil {
 		return nil, err
@@ -197,10 +222,20 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 	if err != nil {
 		return nil, fmt.Errorf("ACME obtain: %w", err)
 	}
+	return res, nil
+}
+
+// doIssue：obtainCert→缓存（Users=1 对应领导者 lease）→KV 输出→响应。
+func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, account *accountEntry, cn string, domains []string, key string) (*logical.Response, error) {
+	res, err := b.obtainCert(ctx, req, account, domains)
+	if err != nil {
+		return nil, err
+	}
 
 	entry := &cacheEntry{
 		Users:                1,
 		Account:              account.Name,
+		Role:                 roleName, // 覆盖复用的来源 role（spec §4.2）
 		CN:                   cn,
 		Domains:              domains,
 		CertURL:              res.CertURL,
@@ -218,7 +253,7 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 			return nil, err
 		}
 	}
-	return b.respondWithCert(ctx, req, roleName, role, entry, key, true)
+	return b.respondWithCert(ctx, req, roleName, role, entry, key, true, "")
 }
 
 // respondWithCert：组装响应（含证书有效期）+ MaxTTL=证书剩余寿命。
@@ -226,9 +261,10 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 // 删除缓存条目后报错，调用者重试走完整重签。
 // freshIssue=false（缓存命中路径）：纯读不写 KV（spec §7「缓存命中不重写」
 // ——命中重写会膨胀 KVv2 历史，且 KV 故障时会误删 Users≥2 的共享条目，KV
-// 持续故障期间还会反复触发完整 ACME Obtain 暴露限流）；output_path 指向
-// 签发时写入的既有数据。
-func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, entry *cacheEntry, key string, freshIssue bool) (*logical.Response, error) {
+// 持续故障期间还会反复触发完整 ACME Obtain 暴露限流）；kvPathOverride 非空
+// 时（覆盖复用）以其为 output_path（指向签发 role 名下真实写入位置），
+// 否则按请求 role 的 output_kv_mount 推导。
+func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, entry *cacheEntry, key string, freshIssue bool, kvPathOverride string) (*logical.Response, error) {
 	kvPath := ""
 	if freshIssue {
 		var err error
@@ -246,6 +282,9 @@ func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, rol
 			}
 			return nil, fmt.Errorf("KV 输出失败: %w", err)
 		}
+	} else if kvPathOverride != "" {
+		// 覆盖复用：output_path 以签发 role 名下的既有 KV 数据为准（spec §5.3）。
+		kvPath = kvPathOverride
 	} else if role.OutputKVMount != "" {
 		// 命中路径不重写 KV：output_path 指向签发时已写入的既有数据。
 		kvPath = outputKVPath(roleName, entry.CN)

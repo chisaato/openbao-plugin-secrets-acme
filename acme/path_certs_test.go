@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-acme/lego/v5/certificate"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/stretchr/testify/require"
 )
@@ -74,6 +75,27 @@ func TestIssuePathValidation(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resp.IsError())
 	require.Contains(t, resp.Error().Error(), "路由")
+
+	// 新增 allow_any_name role，签发任意域名不会被域名校验拦截，直接到达后续流程（此处未配 dns_providers，报错命中"路由"）
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "roles/any-role",
+		Storage: storage,
+		Data: map[string]interface{}{
+			"account":        "le",
+			"allow_any_name": true,
+		},
+	})
+	require.NoError(t, err)
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/any-role",
+		Storage: storage,
+		Data:    map[string]interface{}{"common_name": "arbitrary.domain.org"},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "路由")
+	require.NotContains(t, resp.Error().Error(), "不在 allowed_domains 内")
 }
 
 func TestIssueWithFakeProvider(t *testing.T) {
@@ -136,6 +158,12 @@ func TestIssueWithFakeProvider(t *testing.T) {
 
 func putRoleFixture(t *testing.T, ctx context.Context, storage logical.Storage, role *roleEntry) {
 	t.Helper()
+	putRoleFixtureAt(t, ctx, storage, "web", role)
+}
+
+// putRoleFixtureAt：putRoleFixture 的任意 role 名版本（覆盖复用跨 role 用例）。
+func putRoleFixtureAt(t *testing.T, ctx context.Context, storage logical.Storage, name string, role *roleEntry) {
+	t.Helper()
 	require.NoError(t, storage.Put(ctx, &logical.StorageEntry{
 		Key: "accounts/le",
 		Value: mustJSON(t, &accountEntry{
@@ -143,7 +171,7 @@ func putRoleFixture(t *testing.T, ctx context.Context, storage logical.Storage, 
 		}),
 	}))
 	require.NoError(t, storage.Put(ctx, &logical.StorageEntry{
-		Key:   "roles/web",
+		Key:   "roles/" + name,
 		Value: mustJSON(t, role),
 	}))
 }
@@ -382,4 +410,88 @@ func TestIssueKVFailureDropsCacheEntry(t *testing.T) {
 	gone, err := b.cacheGet(ctx, storage, key)
 	require.NoError(t, err)
 	require.Nil(t, gone, "KV 输出失败后缓存条目应被删除")
+}
+
+// TestIssueCoverageReuse：account 级泛域名条目同步服务单域请求（spec §5.3）。
+// 跨 role 复用时 output_path 以签发 role 名下真实写入位置为准。
+func TestIssueCoverageReuse(t *testing.T) {
+	b, storage := testBackend(t, NewFakeCredentialLoader(nil))
+	ctx := context.Background()
+
+	// 签发 role（web）的泛域名产物条目
+	wildRole := &roleEntry{Account: "le", AllowedDomains: []string{"example.com"},
+		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "kv-certs"}
+	putRoleFixture(t, ctx, storage, wildRole) // roles/web 真实存在（reuseKVPath 解析用）
+	key := putFreshCacheEntry(t, b, ctx, storage, wildRole, []string{"*.example.com"})
+	require.NoError(t, b.cacheUpdate(ctx, storage, key, func(e *cacheEntry) *cacheEntry {
+		e.Role = "web"
+		return e
+	}))
+
+	// 请求 role（web2）与签发 role 不同名、同 account
+	putRoleFixtureAt(t, ctx, storage, "web2", &roleEntry{Account: "le",
+		AllowedDomains: []string{"example.com"}, AllowSubdomains: true, CacheForRatio: 70})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/web2", Storage: storage,
+		ClientToken: "test-token",
+		Data:        map[string]interface{}{"common_name": "sub.example.com"},
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError(), "覆盖复用应同步成功: %v", resp)
+	require.Equal(t, true, resp.Data["reused"])
+	require.NotEmpty(t, resp.Data["certificate"])
+	require.Equal(t, "certs/web/_wildcard.example.com", resp.Data["output_path"],
+		"output_path 应指向签发 role 名下的既有数据")
+
+	entry, err := b.cacheGet(ctx, storage, key)
+	require.NoError(t, err)
+	require.Equal(t, 2, entry.Users, "复用须 Users++")
+
+	// 请求 role disable_cert_reuse → 跳过复用（落入签发→路由缺失报错）
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "roles/noreuse", Storage: storage,
+		Data: map[string]interface{}{
+			"account": "le", "allowed_domains": "example.com",
+			"allow_subdomains": true, "disable_cert_reuse": true,
+		},
+	})
+	require.NoError(t, err)
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/noreuse", Storage: storage,
+		Data: map[string]interface{}{"common_name": "sub.example.com"},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.IsError(), "disable_cert_reuse 应跳过复用")
+}
+
+// TestDoIssueSetsRoleField：签发条目必须带来源 role（覆盖复用依赖，spec §4.2）。
+func TestDoIssueSetsRoleField(t *testing.T) {
+	b, storage, _ := setupObtainable(t)
+	ctx := context.Background()
+
+	// 注入 fake Obtain：绕开真实 ACME，仅验证 doIssue 的条目装配
+	base := time.Now().UTC()
+	b.issueFn = func(ctx context.Context, req *logical.Request, account *accountEntry, domains []string) (*certificate.Resource, error) {
+		return &certificate.Resource{
+			Domains:           domains,
+			PrivateKey:        []byte("K"),
+			Certificate:       []byte(selfSignedCertFor(t, base.Add(-time.Hour), base.Add(24*time.Hour))),
+			IssuerCertificate: []byte("I"),
+		}, nil
+	}
+
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "certs/web", Storage: storage,
+		ClientToken: "test-token",
+		Data:        map[string]interface{}{"common_name": "example.com"},
+	})
+	require.NoError(t, err)
+
+	role, err := b.getRole(ctx, storage, "web")
+	require.NoError(t, err)
+	entry, err := b.cacheGet(ctx, storage, cacheKey(role, []string{"example.com"}))
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	require.Equal(t, "web", entry.Role)
 }
