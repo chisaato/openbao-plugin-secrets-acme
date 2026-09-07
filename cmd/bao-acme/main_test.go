@@ -61,7 +61,7 @@ func TestCLICertIssueFlow(t *testing.T) {
 	keyOut := filepath.Join(tmpDir, "key.pem")
 
 	// 测试 CLI 命令
-	cmd := rootCmd
+	cmd := newRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)

@@ -45,6 +45,11 @@ type jobEntry struct {
 	CreatedAt time.Time        `json:"created_at"`
 	UpdatedAt time.Time        `json:"updated_at"`
 	Cert      *jobCertSnapshot `json:"cert,omitempty"`
+
+	// 单次 Issue 请求传入的覆盖配置（持久化，重启恢复时保持生效）
+	SkipPropagationCheck *bool    `json:"skip_propagation_check,omitempty"`
+	PropagationWait      *int     `json:"propagation_wait,omitempty"`
+	Resolvers            []string `json:"resolvers,omitempty"`
 }
 
 // newJobID：crypto/rand 16 字节 hex（无外部依赖）。
@@ -134,7 +139,16 @@ func (b *backend) runJob(ctx context.Context, st logical.Storage, job *jobEntry)
 	// 插件服务身份执行）；非空占位仅为满足测试 fake 的防误用断言。
 	workerReq := &logical.Request{Storage: st, ClientToken: "job-worker"}
 
-	res, err := b.obtainCert(ctx, workerReq, account, job.Domains)
+	var ov *dns01Overrides
+	if job.SkipPropagationCheck != nil || job.PropagationWait != nil || len(job.Resolvers) > 0 {
+		ov = &dns01Overrides{
+			SkipPropagationCheck: job.SkipPropagationCheck,
+			PropagationWait:      job.PropagationWait,
+			Resolvers:            job.Resolvers,
+		}
+	}
+
+	res, err := b.obtainCert(ctx, workerReq, account, job.Domains, ov)
 	if err != nil {
 		fail("签发失败: %v", err)
 		return
@@ -252,6 +266,10 @@ func (b *backend) jobResponse(job *jobEntry) *logical.Response {
 
 // submitJob：去重挂靠或创建 job 并启动 Worker（spec §3/§5.4）。
 func (b *backend) submitJob(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, cn string, domains []string) (*logical.Response, error) {
+	return b.submitJobWithOverrides(ctx, req, roleName, role, cn, domains, nil)
+}
+
+func (b *backend) submitJobWithOverrides(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, cn string, domains []string, ov *dns01Overrides) (*logical.Response, error) {
 	existing, err := b.findActiveJob(ctx, req.Storage, roleName, domains)
 	if err != nil {
 		return nil, err
@@ -269,6 +287,11 @@ func (b *backend) submitJob(ctx context.Context, req *logical.Request, roleName 
 		CN: cn, AltNames: domains[1:], Domains: domains,
 		CacheKey: cacheKey(role, domains),
 		Status:   jobPending, CreatedAt: now, UpdatedAt: now,
+	}
+	if ov != nil {
+		job.SkipPropagationCheck = ov.SkipPropagationCheck
+		job.PropagationWait = ov.PropagationWait
+		job.Resolvers = ov.Resolvers
 	}
 	if err := b.jobUpdate(ctx, req.Storage, job); err != nil {
 		return nil, err

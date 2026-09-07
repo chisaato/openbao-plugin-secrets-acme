@@ -95,7 +95,7 @@ func (b *backend) certRenew(ctx context.Context, req *logical.Request, d *framew
 	executed := false
 	v, err, _ := b.issueGroup.Do(key, func() (interface{}, error) {
 		executed = true
-		return b.doIssue(ctx, req, roleName, role, account, entry.CN, entry.Domains, key)
+		return b.doIssue(ctx, req, roleName, role, account, entry.CN, entry.Domains, key, nil)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("重签失败: %w", err)

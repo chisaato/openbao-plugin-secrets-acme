@@ -62,13 +62,53 @@ func applyTimeouts(opts providerOpts, propagation, polling *time.Duration) {
 	}
 }
 
+// idempProvider 包装底层 challenge.Provider，在 Present 遇到诸如 Cloudflare 81058
+// ("An identical record already exists") 等已经存在的 TXT 记录时，将其视为幂等成功，
+// 避免因上次签发失败遗留记录或并发重复写入导致整单中断。
+type idempProvider struct {
+	inner challenge.Provider
+}
+
+var _ challenge.Provider = (*idempProvider)(nil)
+var _ challenge.ProviderTimeout = (*idempProvider)(nil)
+
+func (p *idempProvider) Present(ctx context.Context, domain, token, keyAuth string) error {
+	err := p.inner.Present(ctx, domain, token, keyAuth)
+	if err == nil {
+		return nil
+	}
+	errStr := err.Error()
+	// 识别常见的“记录已存在”报错（如 Cloudflare 81058 等）
+	if strings.Contains(errStr, "81058") ||
+		strings.Contains(errStr, "An identical record already exists") ||
+		strings.Contains(errStr, "already exists") {
+		return nil
+	}
+	return err
+}
+
+func (p *idempProvider) CleanUp(ctx context.Context, domain, token, keyAuth string) error {
+	return p.inner.CleanUp(ctx, domain, token, keyAuth)
+}
+
+func (p *idempProvider) Timeout() (timeout, interval time.Duration) {
+	if pt, ok := p.inner.(challenge.ProviderTimeout); ok {
+		return pt.Timeout()
+	}
+	return 60 * time.Second, 2 * time.Second
+}
+
 func buildCloudflare(_ context.Context, opts providerOpts, env map[string]string) (challenge.Provider, error) {
 	cfg, err := cloudflareConfig(env)
 	if err != nil {
 		return nil, err
 	}
 	applyTimeouts(opts, &cfg.PropagationTimeout, &cfg.PollingInterval)
-	return cloudflare.NewDNSProviderConfig(cfg)
+	p, err := cloudflare.NewDNSProviderConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &idempProvider{inner: p}, nil
 }
 
 // cloudflareConfig 导出供测试断言。
@@ -99,7 +139,11 @@ func buildAliDNS(_ context.Context, opts providerOpts, env map[string]string) (c
 		return nil, err
 	}
 	applyTimeouts(opts, &cfg.PropagationTimeout, &cfg.PollingInterval)
-	return alidns.NewDNSProviderConfig(cfg)
+	p, err := alidns.NewDNSProviderConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &idempProvider{inner: p}, nil
 }
 
 func alidnsConfig(env map[string]string) (*alidns.Config, error) {
@@ -133,7 +177,11 @@ func buildTencentCloud(_ context.Context, opts providerOpts, env map[string]stri
 		return nil, err
 	}
 	applyTimeouts(opts, &cfg.PropagationTimeout, &cfg.PollingInterval)
-	return tencentcloud.NewDNSProviderConfig(cfg)
+	p, err := tencentcloud.NewDNSProviderConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &idempProvider{inner: p}, nil
 }
 
 func tencentcloudConfig(env map[string]string) (*tencentcloud.Config, error) {

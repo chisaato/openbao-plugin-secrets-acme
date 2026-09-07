@@ -12,6 +12,7 @@ type DNSProvider struct {
 	PollingInterval      time.Duration   `json:"polling_interval" mapstructure:"polling_interval"`
 	SkipPropagationCheck bool            `json:"skip_propagation_check" mapstructure:"skip_propagation_check"`
 	PropagationWait      int             `json:"propagation_wait" mapstructure:"propagation_wait"`
+	Resolvers            []string        `json:"resolvers,omitempty" mapstructure:"resolvers"`
 }
 
 // Account 是 accounts/{name} 的配置与响应实体。
@@ -46,6 +47,11 @@ type IssueOptions struct {
 	CommonName string   `json:"common_name" mapstructure:"common_name"`
 	AltNames   []string `json:"alt_names,omitempty" mapstructure:"alt_names"`
 	Sync       bool     `json:"sync,omitempty" mapstructure:"sync"`
+
+	// 单次签发覆盖参数
+	SkipPropagationCheck *bool    `json:"skip_propagation_check,omitempty" mapstructure:"skip_propagation_check"`
+	PropagationWait      *int     `json:"propagation_wait,omitempty" mapstructure:"propagation_wait"`
+	Resolvers            []string `json:"resolvers,omitempty" mapstructure:"resolvers"`
 }
 
 // IssueResponse 包含 POST certs/{role} 返回的结果（异步 Job 模式或同步模式）。
@@ -86,3 +92,48 @@ type JobDetail struct {
 	UpdatedAt  string           `json:"updated_at" mapstructure:"updated_at"`
 	Cert       *JobCertSnapshot `json:"cert,omitempty" mapstructure:"cert"`
 }
+
+// CertSummary 是 LIST certs/ 返回的证书摘要。
+type CertSummary struct {
+	CommonName string   `json:"common_name" mapstructure:"common_name"`
+	Domains    []string `json:"domains" mapstructure:"domains"`
+	Role       string   `json:"role" mapstructure:"role"`
+	Account    string   `json:"account" mapstructure:"account"`
+	NotBefore  string   `json:"not_before,omitempty" mapstructure:"not_before"`
+	NotAfter   string   `json:"not_after,omitempty" mapstructure:"not_after"`
+	CacheKey   string   `json:"cache_key" mapstructure:"cache_key"`
+}
+
+// CertDetail 是 GET certs/{role}/{cn} 返回的证书详细实体。
+type CertDetail struct {
+	CommonName     string   `json:"common_name" mapstructure:"common_name"`
+	Domains        []string `json:"domains" mapstructure:"domains"`
+	Role           string   `json:"role" mapstructure:"role"`
+	Account        string   `json:"account" mapstructure:"account"`
+	CertificatePEM string   `json:"certificate" mapstructure:"certificate"`
+	PrivateKeyPEM  string   `json:"private_key" mapstructure:"private_key"`
+	IssuerCertPEM  string   `json:"issuer_cert" mapstructure:"issuer_cert"`
+	CertURL        string   `json:"url" mapstructure:"url"`
+	CertStableURL  string   `json:"cert_stable_url" mapstructure:"cert_stable_url"`
+	NotBefore      string   `json:"not_before,omitempty" mapstructure:"not_before"`
+	NotAfter       string   `json:"not_after,omitempty" mapstructure:"not_after"`
+	NeedsRenewal   bool     `json:"needs_renewal" mapstructure:"needs_renewal"`
+	CacheKey       string   `json:"cache_key" mapstructure:"cache_key"`
+}
+
+// PruneJobOptions 定义清理 Job 的过滤条件。
+type PruneJobOptions struct {
+	FailedOnly bool          `json:"failed_only"`
+	OlderThan  time.Duration `json:"older_than"`
+}
+
+// PrunedJobSummary 记录单次 prune 操作中被删除的 Job 概览。
+type PrunedJobSummary struct {
+	ID        string    `json:"id"`
+	Role      string    `json:"role"`
+	Status    JobStatus `json:"status"`
+	CN        string    `json:"common_name"`
+	UpdatedAt string    `json:"updated_at"`
+	Error     string    `json:"error,omitempty"`
+}
+

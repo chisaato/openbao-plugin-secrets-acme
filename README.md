@@ -271,7 +271,9 @@ bao write acme/dns-providers/mydns-exec \
 
 为简化日常对 ACME 插件的配置与证书签发，项目提供了基于 Cobra 的专用 CLI 工具 `bao-acme`（已包含在 `just build` 中生成至 `bin/bao-acme`）。
 
-### 常用命令
+完整参数说明、各字段覆盖规则与场景用法请阅读专门文档：**[docs/cli.md](docs/cli.md)**。
+
+### 常用命令速览
 
 ```sh
 # 1. 配置 DNS Provider
@@ -283,7 +285,7 @@ bao-acme account register my-account \
   --contact mailto:admin@example.com \
   --provider alidns
 
-# 3. 制定签发 Role
+# 3. 制定签发 Role（支持单字段覆盖更新）
 bao-acme role set default \
   --account my-account \
   --allowed-domains example.com \

@@ -18,9 +18,13 @@ func pathCerts(b *backend) []*framework.Path {
 		Pattern: "certs/" + framework.GenericNameRegex("role"),
 		Fields: map[string]*framework.FieldSchema{
 			"role":              {Type: framework.TypeString, Description: "role 名。"},
-			"common_name":       {Type: framework.TypeString, Required: true, Description: "主域名（可含通配符 *.）。"},
-			"alternative_names": {Type: framework.TypeCommaStringSlice, Description: "附加域名。"},
-			"sync":              {Type: framework.TypeBool, Description: "同步等待签发完成（v0.1.0 兼容）。默认 false：异步返回 job_id。"},
+			"common_name":            {Type: framework.TypeString, Required: true, Description: "主域名（可含通配符 *.）。"},
+			"alternative_names":      {Type: framework.TypeCommaStringSlice, Description: "附加域名。"},
+			"alt_names":              {Type: framework.TypeCommaStringSlice, Description: "附加域名别名 (同 alternative_names)。"},
+			"sync":                   {Type: framework.TypeBool, Description: "同步等待签发完成（v0.1.0 兼容）。默认 false：异步返回 job_id。"},
+			"skip_propagation_check": {Type: framework.TypeBool, Description: "单次签发覆盖：跳过 lego 本地 DNS 传播预检。"},
+			"propagation_wait":       {Type: framework.TypeDurationSecond, Description: "单次签发覆盖：DNS 写入后的等待秒数。"},
+			"resolvers":              {Type: framework.TypeCommaStringSlice, Description: "单次签发覆盖：自定义递归 DNS 服务器列表（如 223.5.5.5:53）。"},
 		},
 		ExistenceCheck: func(ctx context.Context, req *logical.Request, d *framework.FieldData) (bool, error) {
 			role, err := b.getRole(ctx, req.Storage, d.Get("role").(string))
@@ -33,13 +37,27 @@ func pathCerts(b *backend) []*framework.Path {
 	}}
 }
 
+// dns01Overrides 包含单次签发请求对 DNS-01 预检策略的临时覆盖。
+type dns01Overrides struct {
+	SkipPropagationCheck *bool
+	PropagationWait      *int
+	Resolvers            []string
+}
+
 // buildRoutes：按 account.dns_providers 顺序实时读凭据并构造子 provider，
-// 同时聚合各条目的传播预检策略（任一 dns-provider 要求跳过即整体跳过——
-// 预检由 SetDNS01Provider 对所有路由共享）。凭据仅在请求生命周期内存在，
-// 不落存储、不进日志、不进响应。
-func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *accountEntry) (*routingProvider, []dns01.ChallengeOption, error) {
+// 同时聚合各条目的传播预检策略与单次请求的 overrides。
+func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *accountEntry, ov *dns01Overrides) (*routingProvider, []dns01.ChallengeOption, error) {
 	routes := make([]providerRoute, 0, len(acc.DNSProviders))
 	var extraOpts []dns01.ChallengeOption
+
+	// 聚合解析服务器与预检参数
+	var (
+		aggregatedResolvers []string
+		skipCheck           bool
+		hasSkipCheck        bool
+		maxWait             int
+	)
+
 	for _, ref := range acc.DNSProviders {
 		dp, err := b.getDNSProvider(ctx, req.Storage, ref.Name)
 		if err != nil {
@@ -63,11 +81,44 @@ func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *ac
 			return nil, nil, fmt.Errorf("dns-provider %q: %w", ref.Name, err)
 		}
 		routes = append(routes, providerRoute{Name: ref.Name, Zones: ref.Zones, Provider: provider})
+
 		if dp.SkipPropagationCheck {
-			extraOpts = append(extraOpts, dns01.PropagationWait(
-				time.Duration(dp.PropagationWait)*time.Second, true))
+			skipCheck = true
+			hasSkipCheck = true
+		}
+		if dp.PropagationWait > maxWait {
+			maxWait = dp.PropagationWait
+		}
+		if len(dp.Resolvers) > 0 {
+			aggregatedResolvers = append(aggregatedResolvers, dp.Resolvers...)
 		}
 	}
+
+	// 检查单次 overrides
+	if ov != nil {
+		if ov.SkipPropagationCheck != nil {
+			skipCheck = *ov.SkipPropagationCheck
+			hasSkipCheck = true
+		}
+		if ov.PropagationWait != nil {
+			maxWait = *ov.PropagationWait
+		}
+		if len(ov.Resolvers) > 0 {
+			aggregatedResolvers = ov.Resolvers
+		}
+	}
+
+	if len(aggregatedResolvers) > 0 {
+		dns01.SetDefaultClient(dns01.NewClient(&dns01.Options{
+			RecursiveNameservers: aggregatedResolvers,
+		}))
+	}
+	if hasSkipCheck && skipCheck {
+		extraOpts = append(extraOpts, dns01.PropagationWait(time.Duration(maxWait)*time.Second, true))
+	} else if maxWait > 0 {
+		extraOpts = append(extraOpts, dns01.PropagationWait(time.Duration(maxWait)*time.Second, false))
+	}
+
 	router, err := newRoutingProvider(routes)
 	if err != nil {
 		return nil, nil, err
@@ -89,6 +140,11 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 		return logical.ErrorResponse("common_name 必填"), nil
 	}
 	alt := d.Get("alternative_names").([]string)
+	if len(alt) == 0 {
+		if a, ok := d.GetOk("alt_names"); ok {
+			alt = a.([]string)
+		}
+	}
 	domains := append([]string{cn}, alt...)
 
 	if err := validateNames(cn, alt, role); err != nil {
@@ -152,10 +208,36 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 		return resp, nil
 	}
 
-	// 1.8) 默认异步：挂靠同 (role, domains) 的未完成 job，或创建新 job 由
+	// 1.8) 解析 DNS-01 覆盖参数
+	var ov *dns01Overrides
+	if v, ok := d.GetOk("skip_propagation_check"); ok {
+		b := v.(bool)
+		if ov == nil {
+			ov = &dns01Overrides{}
+		}
+		ov.SkipPropagationCheck = &b
+	}
+	if v, ok := d.GetOk("propagation_wait"); ok {
+		w := v.(int)
+		if ov == nil {
+			ov = &dns01Overrides{}
+		}
+		ov.PropagationWait = &w
+	}
+	if v, ok := d.GetOk("resolvers"); ok {
+		res := v.([]string)
+		if len(res) > 0 {
+			if ov == nil {
+				ov = &dns01Overrides{}
+			}
+			ov.Resolvers = res
+		}
+	}
+
+	// 1.9) 默认异步：挂靠同 (role, domains) 的未完成 job，或创建新 job 由
 	//      后台 Worker 驱动（spec §3）。validateNames/account 校验已前置完成。
 	if !d.Get("sync").(bool) {
-		return b.submitJob(ctx, req, roleName, role, cn, domains)
+		return b.submitJobWithOverrides(ctx, req, roleName, role, cn, domains, ov)
 	}
 
 	// 2) sync=true：v0.1.0 同步契约。singleflight 防并发同 key 重复签发。executed 标记本调用者是否为
@@ -166,7 +248,7 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 	executed := false
 	v, err, _ := b.issueGroup.Do(key, func() (interface{}, error) {
 		executed = true
-		return b.doIssue(ctx, req, roleName, role, account, cn, domains, key)
+		return b.doIssue(ctx, req, roleName, role, account, cn, domains, key, ov)
 	})
 	if err != nil {
 		return logical.ErrorResponse("签发失败: %v", err), nil
@@ -187,11 +269,11 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 
 // obtainCert：路由→实时凭据→provider→一次完整 ACME Obtain。issueFn 非空时
 // （测试注入）直接替代；错误文案与同步路径历史行为一致。
-func (b *backend) obtainCert(ctx context.Context, req *logical.Request, account *accountEntry, domains []string) (*certificate.Resource, error) {
+func (b *backend) obtainCert(ctx context.Context, req *logical.Request, account *accountEntry, domains []string, ov *dns01Overrides) (*certificate.Resource, error) {
 	if b.issueFn != nil {
 		return b.issueFn(ctx, req, account, domains)
 	}
-	router, extraOpts, err := b.buildRoutes(ctx, req, account)
+	router, extraOpts, err := b.buildRoutes(ctx, req, account, ov)
 	if err != nil {
 		return nil, err
 	}
@@ -232,8 +314,8 @@ func (b *backend) obtainCert(ctx context.Context, req *logical.Request, account 
 }
 
 // doIssue：obtainCert→缓存（Users=1 对应领导者 lease）→KV 输出→响应。
-func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, account *accountEntry, cn string, domains []string, key string) (*logical.Response, error) {
-	res, err := b.obtainCert(ctx, req, account, domains)
+func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, account *accountEntry, cn string, domains []string, key string, ov *dns01Overrides) (*logical.Response, error) {
+	res, err := b.obtainCert(ctx, req, account, domains, ov)
 	if err != nil {
 		return nil, err
 	}

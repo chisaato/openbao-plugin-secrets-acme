@@ -63,7 +63,7 @@ docker compose exec -T -e BAO_ADDR -e BAO_TOKEN bao bao kv put secret/dns/cf \
   CLOUDFLARE_DNS_API_TOKEN=<your-token>
 ```
 
-你可以直接使用项目内置的快捷 CLI 工具 `bin/bao-acme`（底层封装标准 API），也可继续使用原生 `curl`。
+你可以直接使用项目内置的快捷 CLI 工具 `bin/bao-acme`（详细使用指南与字段参数见 [docs/cli.md](cli.md)），也可继续使用原生 `curl`。
 
 ### 方式 A：使用快捷 CLI (`bin/bao-acme`)
 

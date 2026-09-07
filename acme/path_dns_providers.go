@@ -25,8 +25,10 @@ type dnsProviderEntry struct {
 	// skip=true 时跳过 lego 主动预检（递归/权威 NS 轮询），Present 后改为固定
 	// 等待 propagation_wait 秒。私有 DNS（查不到公网权威 NS）与本地测试 CA
 	// （pebble+challtestsrv）等场景必需；默认 false 保持 lego 默认预检。
-	SkipPropagationCheck bool `json:"skip_propagation_check"`
-	PropagationWait      int  `json:"propagation_wait"`
+	SkipPropagationCheck bool     `json:"skip_propagation_check"`
+	PropagationWait      int      `json:"propagation_wait"`
+	// 自定义递归 DNS 解析服务器（例如 223.5.5.5:53、1.1.1.1:53），避免本地网络污染/脏缓存。
+	Resolvers []string `json:"resolvers,omitempty"`
 }
 
 // validateProviderEntry fail-fast 试读凭据并试构造 provider；
@@ -95,6 +97,10 @@ func pathDNSProviders(b *backend) []*framework.Path {
 			Type:        framework.TypeDurationSecond,
 			Description: "skip_propagation_check=true 时的固定等待秒数；0=立即通知 ACME。",
 		},
+		"resolvers": {
+			Type:        framework.TypeCommaStringSlice,
+			Description: "自定义递归 DNS 服务器列表（如 223.5.5.5:53,1.1.1.1:53），覆盖本地默认 DNS 避免污染或脏缓存。",
+		},
 	}
 
 	write := &framework.Path{
@@ -120,6 +126,7 @@ func pathDNSProviders(b *backend) []*framework.Path {
 						"polling_interval":       int64(entry.PollingInterval.Seconds()),
 						"skip_propagation_check": entry.SkipPropagationCheck,
 						"propagation_wait":       int64(entry.PropagationWait),
+						"resolvers":              entry.Resolvers,
 					}}, nil
 				},
 			},
@@ -182,6 +189,9 @@ func (b *backend) pathDNSProviderWrite(ctx context.Context, req *logical.Request
 		} else {
 			entry.PropagationWait = w
 		}
+	}
+	if v, ok := d.GetOk("resolvers"); ok {
+		entry.Resolvers = v.([]string)
 	}
 
 	if _, ok := registry[entry.Type]; !ok {

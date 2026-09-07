@@ -26,17 +26,41 @@ var (
 	}
 )
 
-func init() {
-	rootCmd.PersistentFlags().StringVar(&flagAddress, "address", "", "OpenBao 服务地址 (默认从 BAO_ADDR/VAULT_ADDR 读取，或 http://127.0.0.1:8200)")
-	rootCmd.PersistentFlags().StringVar(&flagToken, "token", "", "OpenBao 访问 Token (默认从 BAO_TOKEN/VAULT_TOKEN 读取)")
-	rootCmd.PersistentFlags().StringVar(&flagMount, "mount", "acme", "ACME 插件挂载路径")
-	rootCmd.PersistentFlags().StringVarP(&flagFormat, "format", "f", "text", "输出格式 (text 或 json)")
+func newRootCmd() *cobra.Command {
+	var (
+		localAddress string
+		localToken   string
+		localMount   string
+		localFormat  string
+	)
 
-	rootCmd.AddCommand(newAccountCmd())
-	rootCmd.AddCommand(newProviderCmd())
-	rootCmd.AddCommand(newRoleCmd())
-	rootCmd.AddCommand(newCertCmd())
-	rootCmd.AddCommand(newJobCmd())
+	cmd := &cobra.Command{
+		Use:   "bao-acme",
+		Short: "OpenBao ACME 插件运维与证书签发 CLI",
+		Long: `bao-acme 是用于与 openbao-plugin-secrets-acme 交互的命令行工具。
+支持账户管理、DNS Provider 配置、Role 策略制定、异步证书签发及 Job 状态轮询。`,
+	}
+
+	cmd.PersistentFlags().StringVar(&flagAddress, "address", "", "OpenBao 服务地址 (默认从 BAO_ADDR/VAULT_ADDR 读取，或 http://127.0.0.1:8200)")
+	cmd.PersistentFlags().StringVar(&flagToken, "token", "", "OpenBao 访问 Token (默认从 BAO_TOKEN/VAULT_TOKEN 读取)")
+	cmd.PersistentFlags().StringVar(&flagMount, "mount", "acme", "ACME 插件挂载路径")
+	cmd.PersistentFlags().StringVarP(&flagFormat, "format", "f", "text", "输出格式 (text 或 json)")
+
+	cmd.AddCommand(newAccountCmd())
+	cmd.AddCommand(newProviderCmd())
+	cmd.AddCommand(newRoleCmd())
+	cmd.AddCommand(newCertCmd())
+	cmd.AddCommand(newJobCmd())
+
+	_ = localAddress
+	_ = localToken
+	_ = localMount
+	_ = localFormat
+	return cmd
+}
+
+func init() {
+	rootCmd = newRootCmd()
 }
 
 func getClient() (*client.Client, error) {
@@ -155,7 +179,7 @@ func newAccountCmd() *cobra.Command {
 
 	listCmd := &cobra.Command{
 		Use:   "list",
-		Short: "列出全部账户",
+		Short: "列出全部已注册的 ACME 账户",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cli, err := getClient()
 			if err != nil {
@@ -165,7 +189,35 @@ func newAccountCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			printOutput(list)
+			if flagFormat == "json" {
+				printOutput(list)
+				return nil
+			}
+			if len(list) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "未找到任何账户。")
+				return nil
+			}
+
+			tw := newTabWriter(cmd.OutOrStdout())
+			fmt.Fprintln(tw, "NAME\tSERVER URL\tCONTACT\tKEY TYPE\tPROVIDERS")
+			for _, name := range list {
+				acc, err := cli.GetAccount(cmd.Context(), name)
+				if err != nil {
+					fmt.Fprintf(tw, "%s\t-\t-\t-\t-\n", name)
+					continue
+				}
+				var pNames []string
+				for _, p := range acc.DNSProviders {
+					pNames = append(pNames, p.Name)
+				}
+				pStr := strings.Join(pNames, ", ")
+				if pStr == "" {
+					pStr = "-"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+					name, acc.ServerURL, acc.Contact, acc.KeyType, pStr)
+			}
+			_ = tw.Flush()
 			return nil
 		},
 	}
@@ -207,11 +259,12 @@ func newProviderCmd() *cobra.Command {
 		pollInterval      string
 		skipPropagation   bool
 		propWait          int
+		pResolvers        []string
 	)
 
 	setCmd := &cobra.Command{
 		Use:   "set <name>",
-		Short: "配置或更新 DNS Provider",
+		Short: "配置或更新 DNS Provider (支持单独字段增量覆盖)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -220,30 +273,59 @@ func newProviderCmd() *cobra.Command {
 				return err
 			}
 
-			p := api.DNSProvider{
-				Type:                 pType,
-				SkipPropagationCheck: skipPropagation,
-				PropagationWait:      propWait,
+			// 尝试读取已有 Provider 配置以支持增量覆盖
+			var p api.DNSProvider
+			existing, getErr := cli.GetDNSProvider(cmd.Context(), name)
+			if getErr == nil && existing != nil {
+				p = *existing
 			}
-			if credMount != "" && credPath != "" {
+
+			// 仅更新用户在命令行中显式声明了的字段 (Changed)
+			if cmd.Flags().Changed("type") {
+				p.Type = pType
+			}
+			if cmd.Flags().Changed("cred-path") || cmd.Flags().Changed("cred-mount") {
+				mount := credMount
+				if mount == "" {
+					mount = "secret"
+				}
+				if p.CredentialsRef != nil && !cmd.Flags().Changed("cred-mount") {
+					mount = p.CredentialsRef.Mount
+				}
 				p.CredentialsRef = &api.CredentialsRef{
-					Mount: credMount,
+					Mount: mount,
 					Path:  credPath,
 				}
 			}
-			if propTimeout != "" {
+			if cmd.Flags().Changed("prop-timeout") {
 				d, err := time.ParseDuration(propTimeout)
 				if err != nil {
 					return fmt.Errorf("非法 propagation-timeout: %w", err)
 				}
 				p.PropagationTimeout = d
 			}
-			if pollInterval != "" {
+			if cmd.Flags().Changed("poll-interval") {
 				d, err := time.ParseDuration(pollInterval)
 				if err != nil {
 					return fmt.Errorf("非法 polling-interval: %w", err)
 				}
 				p.PollingInterval = d
+			}
+			if cmd.Flags().Changed("skip-check") {
+				p.SkipPropagationCheck = skipPropagation
+			}
+			if cmd.Flags().Changed("prop-wait") {
+				p.PropagationWait = propWait
+			}
+			if cmd.Flags().Changed("resolvers") {
+				p.Resolvers = pResolvers
+			}
+
+			if p.Type == "" {
+				return fmt.Errorf("全新配置 DNS Provider 时 --type 为必填项")
+			}
+			if p.CredentialsRef == nil || p.CredentialsRef.Path == "" {
+				return fmt.Errorf("全新配置 DNS Provider 时 --cred-path 为必填项")
 			}
 
 			if err := cli.SetDNSProvider(cmd.Context(), name, p); err != nil {
@@ -253,15 +335,14 @@ func newProviderCmd() *cobra.Command {
 			return nil
 		},
 	}
-	setCmd.Flags().StringVar(&pType, "type", "", "Provider 类型 (如 alidns, tencentcloud，必填)")
+	setCmd.Flags().StringVar(&pType, "type", "", "Provider 类型 (如 alidns, tencentcloud, cloudflare)")
 	setCmd.Flags().StringVar(&credMount, "cred-mount", "secret", "凭据所在的 KV mount")
-	setCmd.Flags().StringVar(&credPath, "cred-path", "", "凭据所在的 KV 相对路径 (必填)")
+	setCmd.Flags().StringVar(&credPath, "cred-path", "", "凭据所在的 KV 相对路径")
 	setCmd.Flags().StringVar(&propTimeout, "prop-timeout", "2m", "DNS 传播超时")
 	setCmd.Flags().StringVar(&pollInterval, "poll-interval", "2s", "DNS 轮询间隔")
 	setCmd.Flags().BoolVar(&skipPropagation, "skip-check", false, "跳过预检 (适用于本地 pebble 或自建权威 DNS)")
 	setCmd.Flags().IntVar(&propWait, "prop-wait", 0, "跳过预检时的固定等待秒数")
-	_ = setCmd.MarkFlagRequired("type")
-	_ = setCmd.MarkFlagRequired("cred-path")
+	setCmd.Flags().StringSliceVar(&pResolvers, "resolvers", nil, "自定义递归 DNS 解析服务器 (例如 223.5.5.5:53,1.1.1.1:53)")
 
 	getCmd := &cobra.Command{
 		Use:   "get <name>",
@@ -293,7 +374,31 @@ func newProviderCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			printOutput(list)
+			if flagFormat == "json" {
+				printOutput(list)
+				return nil
+			}
+			if len(list) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "未找到任何 DNS Provider。")
+				return nil
+			}
+
+			tw := newTabWriter(cmd.OutOrStdout())
+			fmt.Fprintln(tw, "NAME\tTYPE\tTIMEOUT\tINTERVAL\tPROP_WAIT\tRESOLVERS")
+			for _, name := range list {
+				p, err := cli.GetDNSProvider(cmd.Context(), name)
+				if err != nil {
+					fmt.Fprintf(tw, "%s\t-\t-\t-\t-\t-\n", name)
+					continue
+				}
+				resStr := strings.Join(p.Resolvers, ", ")
+				if resStr == "" {
+					resStr = "-"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%ds\t%s\n",
+					name, p.Type, p.PropagationTimeout, p.PollingInterval, p.PropagationWait, resStr)
+			}
+			_ = tw.Flush()
 			return nil
 		},
 	}
@@ -341,7 +446,7 @@ func newRoleCmd() *cobra.Command {
 
 	setCmd := &cobra.Command{
 		Use:   "set <name>",
-		Short: "创建或更新 Role",
+		Short: "创建或覆盖更新 Role (仅传递被指定的 flag，未指定的保留旧值)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -349,34 +454,57 @@ func newRoleCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			r := api.Role{
-				Account:          account,
-				AllowedDomains:   allowedDomains,
-				AllowBareDomains: allowBare,
-				AllowSubdomains:  allowSub,
-				AllowAnyName:     allowAny,
-				DisableCache:     disableCache,
-				DisableCertReuse: disableCertReuse,
-				CacheForRatio:    cacheForRatio,
-				OutputKVMount:    outputKVMount,
+
+			// 收集用户在命令行实际传递改变的 flag
+			fields := make(map[string]any)
+			if cmd.Flags().Changed("account") {
+				fields["account"] = account
 			}
-			if err := cli.SetRole(cmd.Context(), name, r); err != nil {
+			if cmd.Flags().Changed("allowed-domains") {
+				fields["allowed_domains"] = allowedDomains
+			}
+			if cmd.Flags().Changed("allow-bare") {
+				fields["allow_bare_domains"] = allowBare
+			}
+			if cmd.Flags().Changed("allow-sub") {
+				fields["allow_subdomains"] = allowSub
+			}
+			if cmd.Flags().Changed("allow-any") {
+				fields["allow_any_name"] = allowAny
+			}
+			if cmd.Flags().Changed("disable-cache") {
+				fields["disable_cache"] = disableCache
+			}
+			if cmd.Flags().Changed("disable-reuse") {
+				fields["disable_cert_reuse"] = disableCertReuse
+			}
+			if cmd.Flags().Changed("cache-ratio") {
+				fields["cache_for_ratio"] = cacheForRatio
+			}
+			if cmd.Flags().Changed("output-kv") {
+				fields["output_kv_mount"] = outputKVMount
+			}
+
+			if len(fields) == 0 {
+				return fmt.Errorf("未指定任何需要设置的字段，请参考 --help")
+			}
+
+			if err := cli.UpdateRole(cmd.Context(), name, fields); err != nil {
 				return err
 			}
 			fmt.Printf("Role %q 配置成功\n", name)
 			return nil
 		},
 	}
-	setCmd.Flags().StringVar(&account, "account", "", "关联的 ACME 账户名 (必填)")
+	setCmd.Flags().StringVar(&account, "account", "", "关联的 ACME 账户名 (首次创建时必填)")
 	setCmd.Flags().StringSliceVar(&allowedDomains, "allowed-domains", nil, "白名单根域名 (逗号分隔)")
-	setCmd.Flags().BoolVar(&allowBare, "allow-bare", true, "允许白名单裸域")
-	setCmd.Flags().BoolVar(&allowSub, "allow-sub", true, "允许白名单子域")
-	setCmd.Flags().BoolVar(&allowAny, "allow-any", false, "允许任意域名 (跳过白名单检查)")
-	setCmd.Flags().BoolVar(&disableCache, "disable-cache", false, "禁用证书缓存")
-	setCmd.Flags().BoolVar(&disableCertReuse, "disable-reuse", false, "禁用同账户泛域名覆盖复用")
-	setCmd.Flags().IntVar(&cacheForRatio, "cache-ratio", 80, "缓存有效期百分比")
-	setCmd.Flags().StringVar(&outputKVMount, "output-kv", "", "输出证书与私钥的 KV-v2 挂载路径 (可选)")
-	_ = setCmd.MarkFlagRequired("account")
+	setCmd.Flags().BoolVar(&allowBare, "allow-bare", false, "允许白名单裸域 (--allow-bare / --allow-bare=false)")
+	setCmd.Flags().BoolVar(&allowSub, "allow-sub", false, "允许白名单子域 (--allow-sub / --allow-sub=false)")
+	setCmd.Flags().BoolVar(&allowAny, "allow-any", false, "允许任意域名签发 (--allow-any / --allow-any=false)")
+	setCmd.Flags().BoolVar(&disableCache, "disable-cache", false, "禁用证书缓存 (--disable-cache / --disable-cache=false)")
+	setCmd.Flags().BoolVar(&disableCertReuse, "disable-reuse", false, "禁用泛域名覆盖复用 (--disable-reuse / --disable-reuse=false)")
+	setCmd.Flags().IntVar(&cacheForRatio, "cache-ratio", 0, "缓存有效期百分比 (1-100)")
+	setCmd.Flags().StringVar(&outputKVMount, "output-kv", "", "输出证书与私钥的 KV-v2 挂载路径 (如 secret)")
 
 	getCmd := &cobra.Command{
 		Use:   "get <name>",
@@ -408,7 +536,38 @@ func newRoleCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			printOutput(list)
+			if flagFormat == "json" {
+				printOutput(list)
+				return nil
+			}
+			if len(list) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "未找到任何 Role。")
+				return nil
+			}
+
+			tw := newTabWriter(cmd.OutOrStdout())
+			fmt.Fprintln(tw, "ROLE\tACCOUNT\tALLOWED DOMAINS\tRATIO\tDISABLE_CACHE\tKV_MOUNT")
+			for _, name := range list {
+				role, err := cli.GetRole(cmd.Context(), name)
+				if err != nil {
+					fmt.Fprintf(tw, "%s\t-\t-\t-\t-\t-\n", name)
+					continue
+				}
+				domainsStr := strings.Join(role.AllowedDomains, ", ")
+				if role.AllowAnyName {
+					domainsStr = "*"
+				} else if domainsStr == "" {
+					domainsStr = "-"
+				}
+				domainsStr = truncateString(domainsStr, 30)
+				kvMount := role.OutputKVMount
+				if kvMount == "" {
+					kvMount = "-"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%d%%\t%t\t%s\n",
+					name, role.Account, domainsStr, role.CacheForRatio, role.DisableCache, kvMount)
+			}
+			_ = tw.Flush()
 			return nil
 		},
 	}
@@ -443,13 +602,17 @@ func newCertCmd() *cobra.Command {
 	}
 
 	var (
-		cn         string
-		altNames   []string
-		syncFlag   bool
-		noWait     bool
-		waitTimeout string
-		outCert    string
-		outKey     string
+		domainsList     []string
+		cn              string
+		altNames        []string
+		syncFlag        bool
+		noWait          bool
+		waitTimeout     string
+		outCert         string
+		outKey          string
+		skipPropagation bool
+		propWait        int
+		issueResolvers  []string
 	)
 
 	issueCmd := &cobra.Command{
@@ -463,12 +626,37 @@ func newCertCmd() *cobra.Command {
 				return err
 			}
 
+			// 支持类似 acme.sh 的 -d / --domain 参数：第一个作为 CN，后续作为 altNames
+			effectiveCN := cn
+			effectiveAlt := altNames
+			if len(domainsList) > 0 {
+				if effectiveCN == "" {
+					effectiveCN = domainsList[0]
+				}
+				if len(domainsList) > 1 {
+					effectiveAlt = append(effectiveAlt, domainsList[1:]...)
+				}
+			}
+
+			if effectiveCN == "" {
+				return fmt.Errorf("必须指定证书主域名：使用 -d <domain> 或 --cn <domain>")
+			}
+
 			// 发起签发请求
-			resp, err := cli.IssueCert(cmd.Context(), role, api.IssueOptions{
-				CommonName: cn,
-				AltNames:   altNames,
+			issueOpts := api.IssueOptions{
+				CommonName: effectiveCN,
+				AltNames:   effectiveAlt,
 				Sync:       syncFlag,
-			})
+				Resolvers:  issueResolvers,
+			}
+			if cmd.Flags().Changed("skip-check") {
+				issueOpts.SkipPropagationCheck = &skipPropagation
+			}
+			if cmd.Flags().Changed("prop-wait") {
+				issueOpts.PropagationWait = &propWait
+			}
+
+			resp, err := cli.IssueCert(cmd.Context(), role, issueOpts)
 			if err != nil {
 				return fmt.Errorf("发起签发失败: %w", err)
 			}
@@ -516,16 +704,152 @@ func newCertCmd() *cobra.Command {
 			return nil
 		},
 	}
-	issueCmd.Flags().StringVar(&cn, "cn", "", "证书 Common Name (必填)")
+	issueCmd.Flags().StringSliceVarP(&domainsList, "domain", "d", nil, "域名列表 (类似 acme.sh，可重复指定或逗号分隔，首个为主域名 CN)")
+	issueCmd.Flags().StringVar(&cn, "cn", "", "证书 Common Name (可选，若指定 -d 则以 -d 首个域名为准)")
 	issueCmd.Flags().StringSliceVar(&altNames, "alt", nil, "证书 SAN 备用域名列表")
 	issueCmd.Flags().BoolVar(&syncFlag, "sync", false, "强制使用同步阻塞签发 (不推荐)")
 	issueCmd.Flags().BoolVar(&noWait, "no-wait", false, "仅提交异步任务，不自动在终端等待结果")
 	issueCmd.Flags().StringVar(&waitTimeout, "wait-timeout", "3m", "等待完成的超时时间")
 	issueCmd.Flags().StringVar(&outCert, "out-cert", "", "将证书保存到本地文件路径")
 	issueCmd.Flags().StringVar(&outKey, "out-key", "", "将私钥保存到本地文件路径")
-	_ = issueCmd.MarkFlagRequired("cn")
+	issueCmd.Flags().BoolVar(&skipPropagation, "skip-check", false, "单次签发覆盖：跳过 lego 本地预检")
+	issueCmd.Flags().IntVar(&propWait, "prop-wait", 0, "单次签发覆盖：固定等待秒数")
+	issueCmd.Flags().StringSliceVar(&issueResolvers, "resolvers", nil, "单次签发覆盖：指定递归 DNS 解析器 (例如 223.5.5.5:53,1.1.1.1:53)")
 
-	cmd.AddCommand(issueCmd)
+	// ---- 1. cert list ----
+	var listRole string
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出已签发/已缓存的证书",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := getClient()
+			if err != nil {
+				return err
+			}
+			certs, err := cli.ListCerts(cmd.Context(), listRole)
+			if err != nil {
+				return err
+			}
+			if flagFormat == "json" {
+				printOutput(certs)
+				return nil
+			}
+			if len(certs) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "未找到任何证书。")
+				return nil
+			}
+
+			tw := newTabWriter(cmd.OutOrStdout())
+			fmt.Fprintln(tw, "COMMON NAME\tROLE\tACCOUNT\tEXPIRES\tSTATUS")
+			for _, c := range certs {
+				rem := formatRemaining(c.NotAfter)
+				status := "Active"
+				if rem == "Expired" {
+					status = "Expired"
+				} else if strings.HasSuffix(rem, "d") {
+					// 大于 30 天 Active，否则 Expiring
+					var days int
+					_, _ = fmt.Sscanf(rem, "%dd", &days)
+					if days <= 30 {
+						status = "Expiring"
+					}
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+					c.CommonName, c.Role, c.Account, rem, status)
+			}
+			_ = tw.Flush()
+			return nil
+		},
+	}
+	listCmd.Flags().StringVar(&listRole, "role", "", "过滤指定 Role 的证书 (默认展示全部)")
+
+	// ---- 2. cert get ----
+	var getOutCert, getOutKey string
+	getCmd := &cobra.Command{
+		Use:   "get <role> <cn>",
+		Short: "获取指定证书详情与公私钥",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			role := args[0]
+			cn := args[1]
+			cli, err := getClient()
+			if err != nil {
+				return err
+			}
+			detail, err := cli.GetCert(cmd.Context(), role, cn)
+			if err != nil {
+				return err
+			}
+			if getOutCert != "" || getOutKey != "" {
+				return saveOrPrintCert(detail.CertificatePEM, detail.PrivateKeyPEM, getOutCert, getOutKey, detail)
+			}
+			if flagFormat == "json" {
+				printOutput(detail)
+				return nil
+			}
+			fmt.Printf("Common Name:    %s\n", detail.CommonName)
+			fmt.Printf("Domains:        %s\n", strings.Join(detail.Domains, ", "))
+			fmt.Printf("Role:           %s\n", detail.Role)
+			fmt.Printf("Account:        %s\n", detail.Account)
+			fmt.Printf("Not Before:     %s\n", detail.NotBefore)
+			fmt.Printf("Not After:      %s\n", detail.NotAfter)
+			fmt.Printf("Needs Renewal:  %v\n", detail.NeedsRenewal)
+			fmt.Printf("\n--- CERTIFICATE ---\n%s", detail.CertificatePEM)
+			return nil
+		},
+	}
+	getCmd.Flags().StringVar(&getOutCert, "out-cert", "", "将证书保存到本地文件路径")
+	getCmd.Flags().StringVar(&getOutKey, "out-key", "", "将私钥保存到本地文件路径")
+
+	// ---- 3. cert revoke ----
+	revokeCmd := &cobra.Command{
+		Use:   "revoke <role> <cn>",
+		Short: "撤销指定证书并从集群中清理",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			role := args[0]
+			cn := args[1]
+			cli, err := getClient()
+			if err != nil {
+				return err
+			}
+			if err := cli.RevokeCert(cmd.Context(), role, cn); err != nil {
+				return fmt.Errorf("撤销证书失败: %w", err)
+			}
+			fmt.Printf("证书 %s/%s 已撤销并从存储缓存中清除。\n", role, cn)
+			return nil
+		},
+	}
+
+	// ---- 4. cert renew ----
+	var renewSync bool
+	renewCmd := &cobra.Command{
+		Use:   "renew <role> <cn>",
+		Short: "主动触发已有证书的续签",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			role := args[0]
+			cn := args[1]
+			cli, err := getClient()
+			if err != nil {
+				return err
+			}
+			resp, err := cli.RenewCert(cmd.Context(), role, cn, renewSync)
+			if err != nil {
+				return fmt.Errorf("触发续签失败: %w", err)
+			}
+			if resp.CertificatePEM != "" {
+				fmt.Println("同步续签成功：")
+				fmt.Println(resp.CertificatePEM)
+				return nil
+			}
+			fmt.Printf("续签异步任务已提交: %s (轮询路径: %s)\n", resp.JobID, resp.PollPath)
+			return nil
+		},
+	}
+	renewCmd.Flags().BoolVar(&renewSync, "sync", false, "强制使用同步阻塞续签")
+
+	cmd.AddCommand(issueCmd, listCmd, getCmd, revokeCmd, renewCmd)
 	return cmd
 }
 
@@ -584,7 +908,7 @@ func newJobCmd() *cobra.Command {
 
 	listCmd := &cobra.Command{
 		Use:   "list",
-		Short: "列出全部 Job ID",
+		Short: "列出全部 Job",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cli, err := getClient()
 			if err != nil {
@@ -594,10 +918,109 @@ func newJobCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			printOutput(list)
+			if flagFormat == "json" {
+				printOutput(list)
+				return nil
+			}
+			if len(list) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "未找到任何 Job。")
+				return nil
+			}
+
+			// 获取每个 job 的详情并按 tabular 格式美化输出
+			tw := newTabWriter(cmd.OutOrStdout())
+			fmt.Fprintln(tw, "JOB ID\tROLE\tSTATUS\tCOMMON NAME\tAGE\tERROR")
+			for _, id := range list {
+				j, err := cli.GetJob(cmd.Context(), id)
+				if err != nil {
+					fmt.Fprintf(tw, "%s\t-\t-\t-\t-\t%s\n", id, "读取失败")
+					continue
+				}
+				ts := j.UpdatedAt
+				if ts == "" {
+					ts = j.CreatedAt
+				}
+				errSummary := truncateString(j.Error, 35)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					j.ID, j.Role, j.Status, j.CommonName, formatAge(ts), errSummary)
+			}
+			_ = tw.Flush()
 			return nil
 		},
 	}
+
+	var (
+		pruneFailedOnly bool
+		pruneOlderThan  string
+		pruneYes        bool
+	)
+	pruneCmd := &cobra.Command{
+		Use:   "prune",
+		Short: "自动清理处于终态 (completed / failed) 的历史 Job",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := getClient()
+			if err != nil {
+				return err
+			}
+
+			var olderDur time.Duration
+			if pruneOlderThan != "" {
+				d, err := time.ParseDuration(pruneOlderThan)
+				if err != nil {
+					return fmt.Errorf("非法 older-than 时长: %w", err)
+				}
+				olderDur = d
+			}
+
+			if !pruneYes {
+				targetDesc := "所有已完成或已失败的 Job"
+				if pruneFailedOnly {
+					targetDesc = "所有已失败的 Job"
+				}
+				if olderDur > 0 {
+					targetDesc += fmt.Sprintf(" (存在时间超过 %s)", olderDur)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "确定要清理 %s 吗？[y/N]: ", targetDesc)
+				var ans string
+				_, _ = fmt.Scanln(&ans)
+				if strings.ToLower(strings.TrimSpace(ans)) != "y" {
+					fmt.Fprintln(cmd.OutOrStdout(), "操作已取消。")
+					return nil
+				}
+			}
+
+			pruned, err := cli.PruneJobs(cmd.Context(), api.PruneJobOptions{
+				FailedOnly: pruneFailedOnly,
+				OlderThan:  olderDur,
+			})
+			if err != nil {
+				return err
+			}
+
+			if flagFormat == "json" {
+				printOutput(pruned)
+				return nil
+			}
+
+			if len(pruned) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "未发现需要清理的终态 Job。")
+				return nil
+			}
+
+			tw := newTabWriter(cmd.OutOrStdout())
+			fmt.Fprintf(tw, "已清理 %d 个 Job:\n", len(pruned))
+			fmt.Fprintln(tw, "JOB ID\tROLE\tSTATUS\tCOMMON NAME\tAGE")
+			for _, p := range pruned {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+					p.ID, p.Role, p.Status, p.CN, formatAge(p.UpdatedAt))
+			}
+			_ = tw.Flush()
+			return nil
+		},
+	}
+	pruneCmd.Flags().BoolVar(&pruneFailedOnly, "failed-only", false, "仅清理失败的 Job，保留成功历史")
+	pruneCmd.Flags().StringVar(&pruneOlderThan, "older-than", "", "仅清理距今超过指定时长的 Job (例如 24h, 7d)")
+	pruneCmd.Flags().BoolVarP(&pruneYes, "yes", "y", false, "无需确认直接清理")
 
 	var waitTimeout string
 	waitCmd := &cobra.Command{
@@ -649,7 +1072,7 @@ func newJobCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(getCmd, listCmd, waitCmd, delCmd)
+	cmd.AddCommand(getCmd, listCmd, waitCmd, delCmd, pruneCmd)
 	return cmd
 }
 
