@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/go-acme/lego/v5/acme"
 	"github.com/go-acme/lego/v5/certcrypto"
 	"github.com/go-acme/lego/v5/lego"
@@ -25,24 +26,9 @@ var keyTypes = map[string]certcrypto.KeyType{
 	"RSA8192": certcrypto.RSA8192,
 }
 
-// dnsProviderRef 引用一个 dns-providers/{name} 条目；Zones 为空表示兜底。
-type dnsProviderRef struct {
-	Name  string   `json:"name"`
-	Zones []string `json:"zones,omitempty"`
-}
-
-// accountEntry 是 accounts/{name} 的持久化记录。
-type accountEntry struct {
-	Name             string           `json:"name"`
-	ServerURL        string           `json:"server_url"`
-	Contact          string           `json:"contact"`
-	TOSAgreed        bool             `json:"terms_of_service_agreed"`
-	KeyType          string           `json:"key_type"`
-	PrivateKeyPEM    string           `json:"private_key_pem"`
-	RegistrationJSON string           `json:"registration_json"`
-	InsecureTLS      bool             `json:"insecure_tls"`
-	DNSProviders     []dnsProviderRef `json:"dns_providers"`
-}
+// 别名兼容 storage 包定义
+type dnsProviderRef = storage.DNSProviderRef
+type accountEntry = storage.AccountEntry
 
 // 编译期断言：legoUser 实现 lego 账户接口。
 var _ registration.User = (*legoUser)(nil)
@@ -89,8 +75,8 @@ func parsePrivateKeyPEM(pemStr string) (crypto.Signer, error) {
 	return signer, nil
 }
 
-// legoUser 从持久化字段重建 lego 用户（私钥+注册信息）。
-func (e *accountEntry) legoUser() (*legoUser, error) {
+// AccountLegoUser 从持久化字段重建 lego 用户（私钥+注册信息）。
+func AccountLegoUser(e *accountEntry) (*legoUser, error) {
 	key, err := parsePrivateKeyPEM(e.PrivateKeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("account %s: %w", e.Name, err)

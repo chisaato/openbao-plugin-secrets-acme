@@ -1,4 +1,4 @@
-package acme
+package dns
 
 import (
 	"context"
@@ -9,35 +9,36 @@ import (
 	"github.com/go-acme/lego/v5/challenge"
 )
 
-// providerRoute 把 DNS zone 列表绑定到一个已构造的 provider；Zones 空=兜底。
-type providerRoute struct {
+// Route 把 DNS zone 列表绑定到一个已构造的 provider；Zones 空=兜底。
+type Route struct {
 	Name     string
 	Zones    []string
 	Provider challenge.Provider
 }
 
-// routingProvider 按域名委托 Present/CleanUp。路由表构造后只读，并发安全。
-type routingProvider struct {
-	routes []providerRoute
+// RoutingProvider 按域名委托 Present/CleanUp。路由表构造后只读，并发安全。
+type RoutingProvider struct {
+	routes []Route
 }
 
 // 编译期断言：具备超时聚合能力。
-var _ challenge.ProviderTimeout = (*routingProvider)(nil)
+var _ challenge.ProviderTimeout = (*RoutingProvider)(nil)
 
-func newRoutingProvider(routes []providerRoute) (*routingProvider, error) {
+// NewRoutingProvider 构造根据域名自动路由的 RoutingProvider。
+func NewRoutingProvider(routes []Route) (*RoutingProvider, error) {
 	for i, r := range routes {
 		if r.Provider == nil {
 			return nil, fmt.Errorf("route[%d] (%s) provider 为空", i, r.Name)
 		}
 	}
-	return &routingProvider{routes: routes}, nil
+	return &RoutingProvider{routes: routes}, nil
 }
 
-// match：zones 后缀匹配、zone 段数多者优先、平局按列表顺序、无 zones 兜底、无匹配报错。
-func (rp *routingProvider) match(domain string) (*providerRoute, error) {
+// Match：zones 后缀匹配、zone 段数多者优先、平局按列表顺序、无 zones 兜底、无匹配报错。
+func (rp *RoutingProvider) Match(domain string) (*Route, error) {
 	d := strings.TrimPrefix(strings.ToLower(domain), "*.")
 
-	var best *providerRoute
+	var best *Route
 	bestLabels := -1
 	for i := range rp.routes {
 		r := &rp.routes[i]
@@ -63,7 +64,7 @@ func (rp *routingProvider) match(domain string) (*providerRoute, error) {
 }
 
 // configuredZones 汇总所有路由的 zone 与兜底路由名，仅用于错误信息，不含凭据。
-func (rp *routingProvider) configuredZones() string {
+func (rp *RoutingProvider) configuredZones() string {
 	var parts []string
 	for _, r := range rp.routes {
 		if len(r.Zones) == 0 {
@@ -75,8 +76,8 @@ func (rp *routingProvider) configuredZones() string {
 	return strings.Join(parts, "; ")
 }
 
-func (rp *routingProvider) Present(ctx context.Context, domain, token, keyAuth string) error {
-	r, err := rp.match(domain)
+func (rp *RoutingProvider) Present(ctx context.Context, domain, token, keyAuth string) error {
+	r, err := rp.Match(domain)
 	if err != nil {
 		return err
 	}
@@ -86,8 +87,8 @@ func (rp *routingProvider) Present(ctx context.Context, domain, token, keyAuth s
 	return nil
 }
 
-func (rp *routingProvider) CleanUp(ctx context.Context, domain, token, keyAuth string) error {
-	r, err := rp.match(domain)
+func (rp *RoutingProvider) CleanUp(ctx context.Context, domain, token, keyAuth string) error {
+	r, err := rp.Match(domain)
 	if err != nil {
 		return err
 	}
@@ -98,7 +99,7 @@ func (rp *routingProvider) CleanUp(ctx context.Context, domain, token, keyAuth s
 }
 
 // Timeout 返回各子 provider 最保守（最大）的组合；全默认时 60s/2s。
-func (rp *routingProvider) Timeout() (timeout, interval time.Duration) {
+func (rp *RoutingProvider) Timeout() (timeout, interval time.Duration) {
 	for _, r := range rp.routes {
 		if pt, ok := r.Provider.(challenge.ProviderTimeout); ok {
 			t, i := pt.Timeout()

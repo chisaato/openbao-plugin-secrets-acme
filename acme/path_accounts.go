@@ -5,26 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/go-acme/lego/v5/registration"
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
 
-const storageKeyAccounts = "accounts/"
+const storageKeyAccounts = storage.StorageKeyAccounts
 
 func (b *backend) getAccount(ctx context.Context, s logical.Storage, name string) (*accountEntry, error) {
-	item, err := s.Get(ctx, storageKeyAccounts+name)
-	if err != nil {
-		return nil, err
-	}
-	if item == nil {
-		return nil, nil
-	}
-	var entry accountEntry
-	if err := item.DecodeJSON(&entry); err != nil {
-		return nil, err
-	}
-	return &entry, nil
+	return storage.GetAccount(ctx, s, name)
 }
 
 func pathAccounts(b *backend) []*framework.Path {
@@ -184,7 +174,7 @@ func (b *backend) pathAccountWrite(ctx context.Context, req *logical.Request, d 
 		return logical.ErrorResponse("key_type 创建后不可改，请使用 accounts/%s/rollover", name), nil
 	}
 
-	user, err := entry.legoUser()
+	user, err := AccountLegoUser(entry)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +239,7 @@ func (b *backend) pathAccountDelete(ctx context.Context, req *logical.Request, d
 		return nil, err
 	}
 	// 尽力注销 ACME 账户（lego 的 DeleteRegistration 即 Deactivate）；失败不阻断本地删除。
-	if user, uerr := entry.legoUser(); uerr == nil {
+	if user, uerr := AccountLegoUser(entry); uerr == nil {
 		if client, cerr := newLegoClient(user, entry.ServerURL, entry.InsecureTLS); cerr == nil {
 			_ = client.Registration.DeleteRegistration(ctx)
 		}
@@ -274,7 +264,7 @@ func (b *backend) pathAccountRollover(ctx context.Context, req *logical.Request,
 	if err != nil {
 		return nil, err
 	}
-	user, err := entry.legoUser()
+	user, err := AccountLegoUser(entry)
 	if err != nil {
 		return nil, err
 	}

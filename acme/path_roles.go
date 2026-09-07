@@ -5,24 +5,15 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
 
-const storageKeyRoles = "roles/"
+const storageKeyRoles = storage.StorageKeyRoles
 
-// roleEntry：签发策略（域名白名单、缓存策略、KV 输出目标）。
-type roleEntry struct {
-	Account          string   `json:"account"`
-	AllowedDomains   []string `json:"allowed_domains"`
-	AllowBareDomains bool     `json:"allow_bare_domains"`
-	AllowSubdomains  bool     `json:"allow_subdomains"`
-	AllowAnyName     bool     `json:"allow_any_name"`
-	DisableCache     bool     `json:"disable_cache"`
-	DisableCertReuse bool     `json:"disable_cert_reuse"`
-	CacheForRatio    int      `json:"cache_for_ratio"`
-	OutputKVMount    string   `json:"output_kv_mount"`
-}
+// roleEntry 兼容 storage.RoleEntry
+type roleEntry = storage.RoleEntry
 
 // validateNames：通配符剥 "*." 后按 bare/sub 语义校验（含 PKI 语义一致性）。
 // "*.allowed 域" 视为对白名单域的通配引用直接放行；其余与裸域/子域规则一致。
@@ -67,18 +58,7 @@ func validateNames(cn string, alt []string, role *roleEntry) error {
 }
 
 func (b *backend) getRole(ctx context.Context, s logical.Storage, name string) (*roleEntry, error) {
-	item, err := s.Get(ctx, storageKeyRoles+name)
-	if err != nil {
-		return nil, err
-	}
-	if item == nil {
-		return nil, nil
-	}
-	var role roleEntry
-	if err := item.DecodeJSON(&role); err != nil {
-		return nil, err
-	}
-	return &role, nil
+	return storage.GetRole(ctx, s, name)
 }
 
 func pathRoles(b *backend) []*framework.Path {

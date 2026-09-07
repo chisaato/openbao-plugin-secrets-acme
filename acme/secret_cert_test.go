@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/dns"
 	"github.com/go-acme/lego/v5/challenge"
 	"github.com/go-acme/lego/v5/challenge/dns01"
 	"github.com/openbao/openbao/sdk/v2/logical"
@@ -203,23 +204,23 @@ func (p *challtestsrvProvider) postTxt(endpoint, host, value string) error {
 // registerChalltestsrvProvider 注册测试 provider 类型，测试结束后还原白名单。
 func registerChalltestsrvProvider(t *testing.T) {
 	t.Helper()
-	oldBuild, hadBuild := registry["challtestsrv"]
-	oldNames := envNames["challtestsrv"]
-	registry["challtestsrv"] = func(_ context.Context, _ providerOpts, env map[string]string) (challenge.Provider, error) {
+	oldBuild, hadBuild := dns.Registry["challtestsrv"]
+	oldNames := dns.EnvNames["challtestsrv"]
+	dns.Registry["challtestsrv"] = func(_ context.Context, _ dns.ProviderOpts, env map[string]string) (challenge.Provider, error) {
 		u := env["CHALLTESTSRV_URL"]
 		if u == "" {
 			return nil, fmt.Errorf("challtestsrv: 需要 CHALLTESTSRV_URL")
 		}
 		return &challtestsrvProvider{mgmtURL: u}, nil
 	}
-	envNames["challtestsrv"] = []string{"CHALLTESTSRV_URL"}
+	dns.EnvNames["challtestsrv"] = []string{"CHALLTESTSRV_URL"}
 	t.Cleanup(func() {
 		if hadBuild {
-			registry["challtestsrv"] = oldBuild
+			dns.Registry["challtestsrv"] = oldBuild
 		} else {
-			delete(registry, "challtestsrv")
+			delete(dns.Registry, "challtestsrv")
 		}
-		envNames["challtestsrv"] = oldNames
+		dns.EnvNames["challtestsrv"] = oldNames
 	})
 }
 

@@ -159,7 +159,7 @@ func (b *backend) certRevoke(ctx context.Context, req *logical.Request, d *frame
 		// 错误都只放弃真撤销，绝不影响上面已完成的本地回收（证书在服务端
 		// 到期后自然失效）。撤销输入为 PEM bundle（lego 内部 ParsePEMBundle）。
 		if account, aerr := b.getAccount(ctx, req.Storage, entry.Account); aerr == nil && account != nil {
-			if user, uerr := account.legoUser(); uerr == nil {
+			if user, uerr := AccountLegoUser(account); uerr == nil {
 				if client, cerr := newLegoClient(user, account.ServerURL, account.InsecureTLS); cerr == nil {
 					_ = client.Certificate.Revoke(ctx, []byte(entry.CertificatePEM))
 				}

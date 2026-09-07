@@ -4,26 +4,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/openbao/openbao/api/v2"
 )
 
-// credentialsRef 描述一处 KV 凭据引用。Keys 左键为适配层所需的 lego
-// 环境变量名，右值为用户 KV 数据中的实际键名；缺省时回退同名查找。
-// mapstructure tag 供路径层 FieldData(map) WeakDecode 使用（如 kv_version）。
-type credentialsRef struct {
-	Mount     string            `json:"mount" mapstructure:"mount"`
-	Path      string            `json:"path" mapstructure:"path"`
-	KVVersion string            `json:"kv_version" mapstructure:"kv_version"`
-	Version   int               `json:"version" mapstructure:"version"`
-	Keys      map[string]string `json:"keys" mapstructure:"keys"`
-}
-
-func (r *credentialsRef) kvVersion() string {
-	if r.KVVersion == "1" {
-		return "1"
-	}
-	return "2"
-}
+// credentialsRef 描述一处 KV 凭据引用。
+type credentialsRef = storage.CredentialsRef
 
 // CredentialLoader 在请求生命周期内实时读取 KV（不快照、不落存储）。
 type CredentialLoader interface {
@@ -54,7 +40,7 @@ func (a *apiCredentialLoader) Load(ctx context.Context, clientToken string, ref 
 		verr   error
 	)
 	switch {
-	case ref.kvVersion() == "1":
+	case ref.KVVersionNormalized() == "1":
 		secret, verr = client.KVv1(ref.Mount).Get(ctx, ref.Path)
 		if verr != nil {
 			return nil, fmt.Errorf("read kv1 %s/%s: %w", ref.Mount, ref.Path, verr)

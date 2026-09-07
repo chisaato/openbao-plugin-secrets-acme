@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/api"
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
@@ -17,7 +18,7 @@ import (
 // resumeJobs 由 InitializeFunc（Backend 构造时设置）在挂载/重启后触发；
 // 直接调用 Backend() 的单测路径无人调 Initialize，恢复逻辑对既有测试零影响。
 
-const storageKeyJobs = "jobs/"
+const storageKeyJobs = storage.StorageKeyJobs
 
 type jobStatus = api.JobStatus
 
@@ -30,27 +31,8 @@ const (
 
 type jobCertSnapshot = api.JobCertSnapshot
 
-// jobEntry：异步签发任务（spec §4.1）。私钥/证书快照与 cache/ 条目同级别
-// （storage barrier 加密），无新增暴露面。
-type jobEntry struct {
-	ID        string           `json:"id"`
-	Role      string           `json:"role"`
-	Account   string           `json:"account"`
-	CN        string           `json:"common_name"`
-	AltNames  []string         `json:"alt_names"`
-	Domains   []string         `json:"domains"`
-	CacheKey  string           `json:"cache_key"` // 信息性（GET jobs 展示/排查），Worker 完成路径自行重算
-	Status    jobStatus        `json:"status"`
-	Error     string           `json:"error,omitempty"`
-	CreatedAt time.Time        `json:"created_at"`
-	UpdatedAt time.Time        `json:"updated_at"`
-	Cert      *jobCertSnapshot `json:"cert,omitempty"`
-
-	// 单次 Issue 请求传入的覆盖配置（持久化，重启恢复时保持生效）
-	SkipPropagationCheck *bool    `json:"skip_propagation_check,omitempty"`
-	PropagationWait      *int     `json:"propagation_wait,omitempty"`
-	Resolvers            []string `json:"resolvers,omitempty"`
-}
+// jobEntry 兼容 storage.JobEntry
+type jobEntry = storage.JobEntry
 
 // newJobID：crypto/rand 16 字节 hex（无外部依赖）。
 func newJobID() (string, error) {
@@ -63,11 +45,7 @@ func newJobID() (string, error) {
 
 func (b *backend) jobUpdate(ctx context.Context, st logical.Storage, job *jobEntry) error {
 	job.UpdatedAt = time.Now().UTC()
-	item, err := logical.StorageEntryJSON(storageKeyJobs+job.ID, job)
-	if err != nil {
-		return err
-	}
-	return st.Put(ctx, item)
+	return storage.PutJob(ctx, st, job.ID, job)
 }
 
 // jobTryStart/jobFinish：本进程内同 job 单驱动（spec §8/§9；跨进程以

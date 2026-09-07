@@ -1,4 +1,4 @@
-package acme
+package dns
 
 import (
 	"context"
@@ -32,7 +32,7 @@ func TestIdempProviderSuppressesAlreadyExists(t *testing.T) {
 
 	// 1. 普通错误仍报错
 	mock := &mockChallengeProvider{presentErr: errors.New("auth failed")}
-	idemp := &idempProvider{inner: mock}
+	idemp := &IdempProvider{Inner: mock}
 	err := idemp.Present(ctx, "example.com", "token", "keyAuth")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "auth failed")
@@ -41,7 +41,7 @@ func TestIdempProviderSuppressesAlreadyExists(t *testing.T) {
 	mockCF := &mockChallengeProvider{
 		presentErr: errors.New("cloudflare: failed to create TXT record: [status code 400] 81058: An identical record already exists."),
 	}
-	idempCF := &idempProvider{inner: mockCF}
+	idempCF := &IdempProvider{Inner: mockCF}
 	errCF := idempCF.Present(ctx, "example.com", "token", "keyAuth")
 	assert.NoError(t, errCF, "应被静默容错为成功")
 

@@ -28,8 +28,8 @@ func TestResolveKeysSameNameFallback(t *testing.T) {
 }
 
 func TestRefKVVersionDefault(t *testing.T) {
-	require.Equal(t, "2", (&credentialsRef{}).kvVersion())
-	require.Equal(t, "1", (&credentialsRef{KVVersion: "1"}).kvVersion())
+	require.Equal(t, "2", (&credentialsRef{}).KVVersionNormalized())
+	require.Equal(t, "1", (&credentialsRef{KVVersion: "1"}).KVVersionNormalized())
 }
 
 // newDeletedKVServer 模拟 OpenBao：KVv2 软删除响应（data 为 null 但 metadata

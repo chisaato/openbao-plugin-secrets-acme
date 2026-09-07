@@ -12,26 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
 
-const storageKeyCache = "cache/"
+const storageKeyCache = storage.StorageKeyCache
 
-// cacheEntry：共享证书条目；Users 为引用计数（每个 lease 持有一个引用）。
-type cacheEntry struct {
-	Users                int      `json:"users"`
-	Account              string   `json:"account"`
-	CN                   string   `json:"cn"`
-	Domains              []string `json:"domains"`
-	CertURL              string   `json:"cert_url"`
-	CertStableURL        string   `json:"cert_stable_url"`
-	PrivateKeyPEM        string   `json:"private_key_pem"`
-	CertificatePEM       string   `json:"certificate_pem"`
-	IssuerCertificatePEM string   `json:"issuer_certificate_pem"`
-	// Role：签发时的 role 名。覆盖复用按 account 匹配的前提（spec §4.2）；
-	// 空值=旧条目，覆盖扫描跳过。
-	Role string `json:"role,omitempty"`
-}
+// cacheEntry 兼容 storage.CacheEntry
+type cacheEntry = storage.CacheEntry
 
 // cacheKey：sha256(roleJSON + 排序后 domains)，域名顺序无关。
 func cacheKey(role *roleEntry, domains []string) string {
@@ -45,31 +33,19 @@ func cacheKey(role *roleEntry, domains []string) string {
 func (b *backend) cacheGet(ctx context.Context, s logical.Storage, key string) (*cacheEntry, error) {
 	b.cacheMu.RLock()
 	defer b.cacheMu.RUnlock()
-	item, err := s.Get(ctx, storageKeyCache+key)
-	if err != nil || item == nil {
-		return nil, err
-	}
-	var entry cacheEntry
-	if err := item.DecodeJSON(&entry); err != nil {
-		return nil, err
-	}
-	return &entry, nil
+	return storage.GetCache(ctx, s, key)
 }
 
 func (b *backend) cachePut(ctx context.Context, s logical.Storage, key string, entry *cacheEntry) error {
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
-	raw, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-	return s.Put(ctx, &logical.StorageEntry{Key: storageKeyCache + key, Value: raw})
+	return storage.PutCache(ctx, s, key, entry)
 }
 
 func (b *backend) cacheDelete(ctx context.Context, s logical.Storage, key string) error {
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
-	return s.Delete(ctx, storageKeyCache+key)
+	return storage.DeleteCache(ctx, s, key)
 }
 
 // cacheUpdate 在单个写临界区内完成 get→变更→put，保证并发调用者的读改写

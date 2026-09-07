@@ -352,7 +352,7 @@ func (b *backend) pathCertRevokeByID(ctx context.Context, req *logical.Request, 
 
 	// 1. 尝试向 CA 真撤销
 	if account, aerr := b.getAccount(ctx, req.Storage, entry.Account); aerr == nil && account != nil {
-		if user, uerr := account.legoUser(); uerr == nil {
+		if user, uerr := AccountLegoUser(account); uerr == nil {
 			if client, cerr := newLegoClient(user, account.ServerURL, account.InsecureTLS); cerr == nil {
 				_ = client.Certificate.Revoke(ctx, []byte(entry.CertificatePEM))
 			}
@@ -395,7 +395,7 @@ func (b *backend) pathCertRevoke(ctx context.Context, req *logical.Request, d *f
 
 	// 1. 尝试向 CA 真撤销
 	if account, aerr := b.getAccount(ctx, req.Storage, entry.Account); aerr == nil && account != nil {
-		if user, uerr := account.legoUser(); uerr == nil {
+		if user, uerr := AccountLegoUser(account); uerr == nil {
 			if client, cerr := newLegoClient(user, account.ServerURL, account.InsecureTLS); cerr == nil {
 				_ = client.Certificate.Revoke(ctx, []byte(entry.CertificatePEM))
 			}

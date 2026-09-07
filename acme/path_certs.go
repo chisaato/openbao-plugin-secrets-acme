@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-acme/lego/v5/certcrypto"
 	"github.com/go-acme/lego/v5/certificate"
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/dns"
 	"github.com/go-acme/lego/v5/challenge"
 	"github.com/go-acme/lego/v5/challenge/dns01"
 	"github.com/openbao/openbao/sdk/v2/framework"
@@ -48,8 +49,8 @@ type dns01Overrides struct {
 
 // buildRoutes：按 account.dns_providers 顺序实时读凭据并构造子 provider，
 // 同时聚合各条目的传播预检策略与单次请求的 overrides。
-func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *accountEntry, ov *dns01Overrides) (*routingProvider, []dns01.ChallengeOption, error) {
-	routes := make([]providerRoute, 0, len(acc.DNSProviders))
+func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *accountEntry, ov *dns01Overrides) (*dns.RoutingProvider, []dns01.ChallengeOption, error) {
+	routes := make([]dns.Route, 0, len(acc.DNSProviders))
 	var extraOpts []dns01.ChallengeOption
 
 	// 聚合解析服务器与预检参数
@@ -75,14 +76,14 @@ func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *ac
 		if err != nil {
 			return nil, nil, fmt.Errorf("dns-provider %q 凭据读取失败: %w", ref.Name, err)
 		}
-		provider, err := newProvider(ctx, dp.Type, providerOpts{
+		provider, err := dns.NewProvider(ctx, dp.Type, dns.ProviderOpts{
 			PropagationTimeout: dp.PropagationTimeout,
 			PollingInterval:    dp.PollingInterval,
-		}, resolveKeys(raw, *dp.CredentialsRef, envNames[dp.Type]))
+		}, resolveKeys(raw, *dp.CredentialsRef, dns.EnvNames[dp.Type]))
 		if err != nil {
 			return nil, nil, fmt.Errorf("dns-provider %q: %w", ref.Name, err)
 		}
-		routes = append(routes, providerRoute{Name: ref.Name, Zones: ref.Zones, Provider: provider})
+		routes = append(routes, dns.Route{Name: ref.Name, Zones: ref.Zones, Provider: provider})
 
 		if dp.SkipPropagationCheck {
 			skipCheck = true
@@ -121,7 +122,7 @@ func (b *backend) buildRoutes(ctx context.Context, req *logical.Request, acc *ac
 		extraOpts = append(extraOpts, dns01.PropagationWait(time.Duration(maxWait)*time.Second, false))
 	}
 
-	router, err := newRoutingProvider(routes)
+	router, err := dns.NewRoutingProvider(routes)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -292,12 +293,12 @@ func (b *backend) obtainCert(ctx context.Context, req *logical.Request, account 
 	}
 	// 无任何路由（account 未配 dns_providers）或域无归属 → 明确报错
 	for _, dom := range domains {
-		if _, err := router.match(dom); err != nil {
+		if _, err := router.Match(dom); err != nil {
 			return nil, err
 		}
 	}
 
-	user, err := account.legoUser()
+	user, err := AccountLegoUser(account)
 	if err != nil {
 		return nil, err
 	}

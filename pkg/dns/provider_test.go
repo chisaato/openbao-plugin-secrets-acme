@@ -1,4 +1,4 @@
-package acme
+package dns
 
 import (
 	"testing"
@@ -10,13 +10,13 @@ import (
 )
 
 func TestCloudflareConfigTokenOnly(t *testing.T) {
-	cfg, err := cloudflareConfig(map[string]string{"CLOUDFLARE_DNS_API_TOKEN": "tok"})
+	cfg, err := CloudflareConfig(map[string]string{"CLOUDFLARE_DNS_API_TOKEN": "tok"})
 	require.NoError(t, err)
 	require.Equal(t, "tok", cfg.AuthToken)
 }
 
 func TestCloudflareConfigGlobalKey(t *testing.T) {
-	cfg, err := cloudflareConfig(map[string]string{
+	cfg, err := CloudflareConfig(map[string]string{
 		"CLOUDFLARE_EMAIL": "a@b.c", "CLOUDFLARE_API_KEY": "gk",
 	})
 	require.NoError(t, err)
@@ -25,7 +25,7 @@ func TestCloudflareConfigGlobalKey(t *testing.T) {
 }
 
 func TestCloudflareConfigMissing(t *testing.T) {
-	_, err := cloudflareConfig(map[string]string{})
+	_, err := CloudflareConfig(map[string]string{})
 	require.ErrorContains(t, err, "CLOUDFLARE_DNS_API_TOKEN")
 }
 
@@ -53,7 +53,7 @@ func TestAliDNSConfigRAMRole(t *testing.T) {
 	cfg, err = alidnsConfig(map[string]string{"ALICLOUD_RAM_ROLE": "role"})
 	require.NoError(t, err)
 	require.Equal(t, "role", cfg.RAMRole)
-	_, err = newProvider(t.Context(), "alidns", providerOpts{}, map[string]string{"ALICLOUD_RAM_ROLE": "role"})
+	_, err = NewProvider(t.Context(), "alidns", ProviderOpts{}, map[string]string{"ALICLOUD_RAM_ROLE": "role"})
 	require.NoError(t, err)
 
 	// 全缺仍报错。
@@ -75,24 +75,24 @@ func TestTencentCloudConfig(t *testing.T) {
 
 func TestRegistryWhitelist(t *testing.T) {
 	for _, name := range []string{"cloudflare", "alidns", "tencentcloud", "exec"} {
-		require.Contains(t, registry, name)
+		require.Contains(t, Registry, name)
 	}
-	_, err := newProvider(t.Context(), "dnspod", providerOpts{}, nil)
+	_, err := NewProvider(t.Context(), "dnspod", ProviderOpts{}, nil)
 	require.ErrorContains(t, err, "alidns, cloudflare, exec, tencentcloud")
 }
 
 func TestExecConfig(t *testing.T) {
 	// 缺 EXEC_PATH：报错并列出可用键。
-	_, err := newProvider(t.Context(), "exec", providerOpts{}, nil)
+	_, err := NewProvider(t.Context(), "exec", ProviderOpts{}, nil)
 	require.ErrorContains(t, err, "EXEC_PATH")
 
 	// EXEC_PATH 命中：构造成功且 Program 绑定。
-	p, err := newProvider(t.Context(), "exec", providerOpts{}, map[string]string{"EXEC_PATH": "/bin/true"})
+	p, err := NewProvider(t.Context(), "exec", ProviderOpts{}, map[string]string{"EXEC_PATH": "/bin/true"})
 	require.NoError(t, err)
 	require.IsType(t, &exec.DNSProvider{}, p)
 
 	// 调参覆盖默认值（dns-provider 的 propagation_timeout/polling_interval）。
-	p, err = newProvider(t.Context(), "exec", providerOpts{
+	p, err = NewProvider(t.Context(), "exec", ProviderOpts{
 		PropagationTimeout: 7 * time.Second,
 		PollingInterval:    3 * time.Second,
 	}, map[string]string{"EXEC_PATH": "/bin/true"})

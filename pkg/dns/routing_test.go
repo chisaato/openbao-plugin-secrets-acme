@@ -1,4 +1,4 @@
-package acme
+package dns
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func (p *recordingProvider) Timeout() (time.Duration, time.Duration) {
 func TestRoutingMatch(t *testing.T) {
 	slow := &recordingProvider{}
 	fallback := &recordingProvider{}
-	rp, err := newRoutingProvider([]providerRoute{
+	rp, err := NewRoutingProvider([]Route{
 		{Name: "cf-base", Zones: []string{"example.com"}, Provider: slow},
 		{Name: "cf-sys", Zones: []string{"sys.example.com"}, Provider: fallback},
 		{Name: "catch-all", Provider: fallback},
@@ -35,46 +35,46 @@ func TestRoutingMatch(t *testing.T) {
 	require.NoError(t, err)
 
 	// 精度优先：sys.example.com 胜过 example.com
-	r, err := rp.match("www.sys.example.com")
+	r, err := rp.Match("www.sys.example.com")
 	require.NoError(t, err)
 	require.Equal(t, "cf-sys", r.Name)
 
 	// 后缀匹配
-	r, _ = rp.match("www.example.com")
+	r, _ = rp.Match("www.example.com")
 	require.Equal(t, "cf-base", r.Name)
 
 	// 通配符剥除
-	r, _ = rp.match("*.example.com")
+	r, _ = rp.Match("*.example.com")
 	require.Equal(t, "cf-base", r.Name)
 
 	// 兜底
-	r, _ = rp.match("other.org")
+	r, _ = rp.Match("other.org")
 	require.Equal(t, "catch-all", r.Name)
 }
 
 func TestRoutingNoFallbackError(t *testing.T) {
-	rp, err := newRoutingProvider([]providerRoute{
+	rp, err := NewRoutingProvider([]Route{
 		{Name: "only", Zones: []string{"example.com"}, Provider: &recordingProvider{}},
 	})
 	require.NoError(t, err)
-	_, err = rp.match("other.org")
+	_, err = rp.Match("other.org")
 	require.ErrorContains(t, err, "无匹配")
 }
 
 func TestRoutingOrderTieBreak(t *testing.T) {
 	first, second := &recordingProvider{}, &recordingProvider{}
-	rp, _ := newRoutingProvider([]providerRoute{
+	rp, _ := NewRoutingProvider([]Route{
 		{Name: "first", Zones: []string{"a.com", "b.com"}, Provider: first},
 		{Name: "second", Zones: []string{"b.com"}, Provider: second},
 	})
-	r, err := rp.match("x.b.com")
+	r, err := rp.Match("x.b.com")
 	require.NoError(t, err)
 	require.Equal(t, "first", r.Name) // 深度平局 → 列表顺序
 }
 
 func TestRoutingDelegation(t *testing.T) {
 	p := &recordingProvider{}
-	rp, _ := newRoutingProvider([]providerRoute{
+	rp, _ := NewRoutingProvider([]Route{
 		{Name: "cf", Zones: []string{"example.com"}, Provider: p},
 	})
 	ctx := context.Background()
@@ -84,7 +84,7 @@ func TestRoutingDelegation(t *testing.T) {
 }
 
 func TestRoutingTimeoutAggregate(t *testing.T) {
-	rp, _ := newRoutingProvider([]providerRoute{
+	rp, _ := NewRoutingProvider([]Route{
 		{Name: "a", Provider: &recordingProvider{}},      // 10s/1s
 		{Name: "b", Provider: &routingDefaultProvider{}}, // 无 Timeout 方法，聚合时被跳过
 	})
@@ -94,7 +94,7 @@ func TestRoutingTimeoutAggregate(t *testing.T) {
 }
 
 func TestRoutingTimeoutAllDefault(t *testing.T) {
-	rp, _ := newRoutingProvider([]providerRoute{
+	rp, _ := NewRoutingProvider([]Route{
 		{Name: "a", Provider: &routingDefaultProvider{}},
 		{Name: "b", Provider: &routingDefaultProvider{}},
 	})
@@ -125,7 +125,7 @@ func (p *errProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 
 func TestRoutingDelegationErrorWrap(t *testing.T) {
 	boom := errors.New("boom")
-	rp, _ := newRoutingProvider([]providerRoute{
+	rp, _ := NewRoutingProvider([]Route{
 		{Name: "cf-broken", Zones: []string{"example.com"}, Provider: &errProvider{err: boom}},
 	})
 	ctx := context.Background()

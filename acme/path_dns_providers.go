@@ -7,29 +7,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/dns"
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
 
-const storageKeyDNSProviders = "dns-providers/"
+const storageKeyDNSProviders = storage.StorageKeyDNSProviders
 
-// dnsProviderEntry 是 dns-providers/{name} 的持久化记录。
-// 凭据只存引用（credentials_ref），签发时实时读取（不快照）。
-type dnsProviderEntry struct {
-	Type               string          `json:"type"`
-	CredentialsRef     *credentialsRef `json:"credentials_ref,omitempty"`
-	PropagationTimeout time.Duration   `json:"propagation_timeout"`
-	PollingInterval    time.Duration   `json:"polling_interval"`
-	// 传播预检策略（对齐 lego CLI --dns.disable-cp/--dns.propagation-wait）：
-	// skip=true 时跳过 lego 主动预检（递归/权威 NS 轮询），Present 后改为固定
-	// 等待 propagation_wait 秒。私有 DNS（查不到公网权威 NS）与本地测试 CA
-	// （pebble+challtestsrv）等场景必需；默认 false 保持 lego 默认预检。
-	SkipPropagationCheck bool     `json:"skip_propagation_check"`
-	PropagationWait      int      `json:"propagation_wait"`
-	// 自定义递归 DNS 解析服务器（例如 223.5.5.5:53、1.1.1.1:53），避免本地网络污染/脏缓存。
-	Resolvers []string `json:"resolvers,omitempty"`
-}
+// dnsProviderEntry 兼容 storage.DNSProviderEntry
+type dnsProviderEntry = storage.DNSProviderEntry
 
 // validateProviderEntry fail-fast 试读凭据并试构造 provider；
 // 凭据仅在请求生命周期内使用，不落存储、不进日志、不进响应。
@@ -42,10 +30,10 @@ func (b *backend) validateProviderEntry(ctx context.Context, req *logical.Reques
 		return fmt.Errorf("凭据试读失败: %w", err)
 	}
 	// 试构造即校验：引用可达、键名映射命中、超时参数可被 provider 接受。
-	if _, err := newProvider(ctx, entry.Type, providerOpts{
+	if _, err := dns.NewProvider(ctx, entry.Type, dns.ProviderOpts{
 		PropagationTimeout: entry.PropagationTimeout,
 		PollingInterval:    entry.PollingInterval,
-	}, resolveKeys(raw, *entry.CredentialsRef, envNames[entry.Type])); err != nil {
+	}, resolveKeys(raw, *entry.CredentialsRef, dns.EnvNames[entry.Type])); err != nil {
 		return fmt.Errorf("provider 试构造失败: %w", err)
 	}
 	return nil
@@ -53,18 +41,7 @@ func (b *backend) validateProviderEntry(ctx context.Context, req *logical.Reques
 
 // getDNSProvider 读取单个条目；不存在时返回 (nil, nil)。
 func (b *backend) getDNSProvider(ctx context.Context, s logical.Storage, name string) (*dnsProviderEntry, error) {
-	item, err := s.Get(ctx, storageKeyDNSProviders+name)
-	if err != nil {
-		return nil, err
-	}
-	if item == nil {
-		return nil, nil
-	}
-	var entry dnsProviderEntry
-	if err := item.DecodeJSON(&entry); err != nil {
-		return nil, err
-	}
-	return &entry, nil
+	return storage.GetDNSProvider(ctx, s, name)
 }
 
 func pathDNSProviders(b *backend) []*framework.Path {
@@ -194,9 +171,9 @@ func (b *backend) pathDNSProviderWrite(ctx context.Context, req *logical.Request
 		entry.Resolvers = v.([]string)
 	}
 
-	if _, ok := registry[entry.Type]; !ok {
-		names := make([]string, 0, len(registry))
-		for n := range registry {
+	if _, ok := dns.Registry[entry.Type]; !ok {
+		names := make([]string, 0, len(dns.Registry))
+		for n := range dns.Registry {
 			names = append(names, n)
 		}
 		sort.Strings(names)
