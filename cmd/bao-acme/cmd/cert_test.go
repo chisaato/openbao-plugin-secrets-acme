@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -58,7 +58,7 @@ func TestCLICertManagementOps(t *testing.T) {
 	defer srv.Close()
 
 	// Test cert list
-	cmdList := newRootCmd()
+	cmdList := NewRootCmd()
 	buf := new(bytes.Buffer)
 	cmdList.SetOut(buf)
 	cmdList.SetErr(buf)
@@ -72,7 +72,7 @@ func TestCLICertManagementOps(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test cert get
-	cmdGet := newRootCmd()
+	cmdGet := NewRootCmd()
 	bufGet := new(bytes.Buffer)
 	cmdGet.SetOut(bufGet)
 	cmdGet.SetErr(bufGet)
@@ -86,7 +86,7 @@ func TestCLICertManagementOps(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test cert revoke
-	cmdRevoke := newRootCmd()
+	cmdRevoke := NewRootCmd()
 	bufRev := new(bytes.Buffer)
 	cmdRevoke.SetOut(bufRev)
 	cmdRevoke.SetErr(bufRev)

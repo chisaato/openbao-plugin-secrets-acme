@@ -1,6 +1,36 @@
-# bao-acme CLI 使用手册
+# bao-acme CLI 运维手册 (CLI)
 
-`bao-acme` 是专门用于管理 `openbao-plugin-secrets-acme` 插件的命令行工具，基于 Cobra 构建。它封装了 OpenBao 的标准 HTTP API，简化了账户注册、DNS Provider 配置、Role 策略调整、异步证书签发及状态轮询等高频操作。
+`bao-acme` 是专门用于管理 `openbao-plugin-secrets-acme` 插件的命令行工具，基于 Cobra 构建。它封装了 OpenBao 的标准 HTTP API，简化了账户注册、DNS Provider 配置、Role 策略调整、异步证书签发及状态轮询等高频运维操作。
+
+---
+
+## 常用操作速览
+
+```sh
+# 1. 配置 DNS Provider
+bao-acme provider set alidns --type alidns --cred-mount secret --cred-path dns/ali
+
+# 2. 注册 ACME 账户
+bao-acme account register my-account \
+  --server-url https://acme-v02.api.letsencrypt.org/directory \
+  --contact mailto:admin@example.com \
+  --provider alidns
+
+# 3. 制定签发 Role（支持单字段覆盖更新）
+bao-acme role set default \
+  --account my-account \
+  --allowed-domains example.com \
+  --allow-bare --allow-sub
+
+# 4. 签发证书 (默认异步提交并在终端自动轮询等待结果，直存本地)
+bao-acme cert issue default --cn example.com --alt "*.example.com" \
+  --out-cert cert.pem --out-key key.pem
+
+# 5. 查看与清理 Job
+bao-acme job list
+bao-acme job get <job_id>
+bao-acme job delete <job_id>
+```
 
 ---
 
@@ -175,30 +205,32 @@ bao-acme role delete web
 
 #### 1. 列出证书 (`cert list`)
 ```bash
-# 列出系统内所有证书
+# 列出系统内所有证书 (表格展示 12 位短 ID, 主域名, 全部 SAN 域名, Role, 到期时间与状态)
 bao-acme cert list
 
-# 输出格式示例：
-# COMMON NAME                    ROLE            ACCOUNT         EXPIRES AT (UTC)
-# ------------------------------------------------------------------------------------------
-# example.com                    web             le-staging      2026-12-05T12:00:00Z
-# api.example.com                web             le-staging      2026-12-05T12:00:00Z
+# 按域名模糊/精确过滤 (支持泛域名匹配，如 -d api.example.com 会匹配包含 *.example.com 的证书)
+bao-acme cert list -d example.com
+bao-acme cert list -d api.example.com
 
 # 仅列出指定 Role 下的证书
 bao-acme cert list --role web
 ```
 
 #### 2. 查看与导出证书 (`cert get`)
+支持直接通过 **12 位短 ID** (类似 Docker 短容器 ID 前缀匹配，无二义性) 精准取回特定证书实体，或兼容通过 `<role> <cn>`：
 ```bash
-# 在终端查看证书详细信息（包含有效期、所属 Account/Role、SAN 域名列表及 PEM 内容）
+# 通过 Cert 短 ID 精确查看（推荐，可直接从 cert list 复制 12 位 ID）
+bao-acme cert get 86c1467f25e9
+
+# 通过 role + cn 查看
 bao-acme cert get web example.com
 
 # 提取并导出证书链与私钥到本地文件
-bao-acme cert get web example.com --out-cert /etc/ssl/cert.pem --out-key /etc/ssl/key.pem
+bao-acme cert get 86c1467f25e9 --out-cert /etc/ssl/cert.pem --out-key /etc/ssl/key.pem
 ```
 
 #### 3. 申请签发证书 (`cert issue`)
-发起证书签发。**默认行为：提交异步任务，并在终端输出轮询进度，完成后直接输出或保存证书。**
+发起证书签发。**默认行为：提交异步任务，并在终端输出轮询进度，完成后输出成功卡片。若指定了 `--out-cert` / `--out-key` 则自动保存到本地文件。**
 
 支持类似 `acme.sh` 的 `-d / --domain` 多域名语法（可重复传入或逗号分隔，首个域名为主域名 CN，后续为 SAN 扩展域名），也可以继续使用 `--cn` 和 `--alt`。
 
@@ -208,17 +240,20 @@ bao-acme cert issue web -d example.com -d "*.example.com" \
   --out-cert /etc/ssl/cert.pem \
   --out-key /etc/ssl/key.pem
 
-# 示例 2：请求子域名，自动复用上面刚签发的泛域名证书（毫秒级返回）
+# 示例 2：请求已被泛域名覆盖的子域名时
 bao-acme cert issue web -d app.example.com
-# 终端提示：命中已有证书覆盖复用 (reused: true)，并直接打印证书内容
+# 终端提示：检测到已有证书覆盖，展示匹配的现有证书列表（含短 ID），无需重复申请
 
-# 示例 3：单次签发覆盖 DNS-01 预检（指定 223.5.5.5 上游 DNS，或跳过本地预检）
+# 示例 3：强制签发新证书 (--force)，跳过本地精确缓存与泛域名覆盖复用
+bao-acme cert issue web -d example.com -d "*.example.com" --force
+
+# 示例 4：单次签发覆盖 DNS-01 预检（指定 223.5.5.5 上游 DNS，或跳过本地预检）
 bao-acme cert issue web -d example.com \
   --resolvers "223.5.5.5:53,1.1.1.1:53" \
   --skip-check \
   --prop-wait 60
 
-# 示例 4：仅提交后台任务（脚本自动化场景）
+# 示例 5：仅提交后台任务（脚本自动化场景）
 JOB_ID=$(bao-acme cert issue web -d example.com --no-wait -f json | jq -r .job_id)
 echo "后台任务 ID: $JOB_ID"
 ```

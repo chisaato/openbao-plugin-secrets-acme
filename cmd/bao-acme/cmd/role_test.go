@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -24,7 +24,7 @@ func TestCLIRolePartialUpdate(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	cmd := newRootCmd()
+	cmd := NewRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)

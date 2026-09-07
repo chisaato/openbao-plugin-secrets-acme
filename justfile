@@ -35,6 +35,10 @@ testacc:
 init flag="":
     ./scripts/init-bao.sh {{ flag }}
 
+# 一键更新本地插件：编译 -> 计算 sha256 -> 拷贝至 data/plugins/ -> 更新 bao-config.hcl -> 重启容器
+update-plugin: build-plugin
+    ./scripts/update-plugin.sh
+
 vet:
     go vet ./...
 

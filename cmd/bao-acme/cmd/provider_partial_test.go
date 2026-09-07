@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"context"
@@ -48,7 +48,7 @@ func TestCLIDNSProviderPartialUpdate(t *testing.T) {
 	defer srv.Close()
 
 	// 增量修改：仅传入 --resolvers 和 --skip-check，不传 --type 与 --cred-path
-	cmd := newRootCmd()
+	cmd := NewRootCmd()
 	cmd.SetArgs([]string{
 		"--address", srv.URL,
 		"--token", "t",

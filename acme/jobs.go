@@ -175,7 +175,7 @@ func (b *backend) runJob(ctx context.Context, st logical.Storage, job *jobEntry)
 			return
 		}
 	}
-	kvPath, err := b.writeCertOutput(ctx, workerReq, job.Role, role, entry.CN, entry)
+	kvPath, err := b.writeCertOutput(ctx, workerReq, job.Role, role, key, entry)
 	if err != nil {
 		// 镜像同步路径不变式：KV 失败不留孤儿条目。
 		if !role.DisableCache {
@@ -395,7 +395,9 @@ func (b *backend) pathJobRead(ctx context.Context, req *logical.Request, d *fram
 		return nil, err
 	}
 	data := map[string]interface{}{
+		"id":          job.ID,
 		"job_id":      job.ID,
+		"cache_key":   job.CacheKey,
 		"status":      string(job.Status),
 		"role":        job.Role,
 		"account":     job.Account,

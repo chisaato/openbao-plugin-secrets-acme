@@ -52,6 +52,7 @@ type IssueOptions struct {
 	SkipPropagationCheck *bool    `json:"skip_propagation_check,omitempty" mapstructure:"skip_propagation_check"`
 	PropagationWait      *int     `json:"propagation_wait,omitempty" mapstructure:"propagation_wait"`
 	Resolvers            []string `json:"resolvers,omitempty" mapstructure:"resolvers"`
+	Force                bool     `json:"force,omitempty" mapstructure:"force"`
 }
 
 // IssueResponse 包含 POST certs/{role} 返回的结果（异步 Job 模式或同步模式）。
@@ -79,33 +80,103 @@ type IssueResponse struct {
 
 // JobDetail 是 GET jobs/{id} 返回的完整任务信息。
 type JobDetail struct {
-	ID         string           `json:"id" mapstructure:"id"`
-	Role       string           `json:"role" mapstructure:"role"`
-	Account    string           `json:"account" mapstructure:"account"`
-	CommonName string           `json:"common_name" mapstructure:"common_name"`
-	AltNames   []string         `json:"alt_names" mapstructure:"alt_names"`
-	Domains    []string         `json:"domains" mapstructure:"domains"`
-	CacheKey   string           `json:"cache_key" mapstructure:"cache_key"`
-	Status     JobStatus        `json:"status" mapstructure:"status"`
-	Error      string           `json:"error,omitempty" mapstructure:"error"`
-	CreatedAt  string           `json:"created_at" mapstructure:"created_at"`
-	UpdatedAt  string           `json:"updated_at" mapstructure:"updated_at"`
-	Cert       *JobCertSnapshot `json:"cert,omitempty" mapstructure:"cert"`
+	ID         string    `json:"id" mapstructure:"id"`
+	JobID      string    `json:"job_id,omitempty" mapstructure:"job_id"`
+	Role       string    `json:"role" mapstructure:"role"`
+	Account    string    `json:"account" mapstructure:"account"`
+	CommonName string    `json:"common_name" mapstructure:"common_name"`
+	AltNames   []string  `json:"alt_names" mapstructure:"alt_names"`
+	Domains    []string  `json:"domains" mapstructure:"domains"`
+	CacheKey   string    `json:"cache_key" mapstructure:"cache_key"`
+	Status     JobStatus `json:"status" mapstructure:"status"`
+	Error      string    `json:"error,omitempty" mapstructure:"error"`
+	CreatedAt  string    `json:"created_at" mapstructure:"created_at"`
+	UpdatedAt  string    `json:"updated_at" mapstructure:"updated_at"`
+
+	// 嵌套快照形式
+	Cert *JobCertSnapshot `json:"cert,omitempty" mapstructure:"cert"`
+
+	// 平铺形式（兼容 pathJobRead 直接平铺返回）
+	CertificatePEM string `json:"certificate,omitempty" mapstructure:"certificate"`
+	PrivateKeyPEM  string `json:"private_key,omitempty" mapstructure:"private_key"`
+	IssuerCertPEM  string `json:"issuer_cert,omitempty" mapstructure:"issuer_cert"`
+	CertURL        string `json:"url,omitempty" mapstructure:"url"`
+	CertStableURL  string `json:"cert_stable_url,omitempty" mapstructure:"cert_stable_url"`
+	NotBefore      string `json:"not_before,omitempty" mapstructure:"not_before"`
+	NotAfter       string `json:"not_after,omitempty" mapstructure:"not_after"`
+	OutputPath     string `json:"output_path,omitempty" mapstructure:"output_path"`
+}
+
+// GetID 返回规范化后的 Job ID。
+func (j *JobDetail) GetID() string {
+	if j.ID != "" {
+		return j.ID
+	}
+	return j.JobID
+}
+
+// GetCertSnapshot 获取或组装证书快照。
+func (j *JobDetail) GetCertSnapshot() *JobCertSnapshot {
+	if j.Cert != nil {
+		return j.Cert
+	}
+	if j.CertificatePEM != "" {
+		return &JobCertSnapshot{
+			CertificatePEM: j.CertificatePEM,
+			PrivateKeyPEM:  j.PrivateKeyPEM,
+			IssuerCertPEM:  j.IssuerCertPEM,
+			CertURL:        j.CertURL,
+			CertStableURL:  j.CertStableURL,
+			NotBefore:      j.NotBefore,
+			NotAfter:       j.NotAfter,
+			OutputPath:     j.OutputPath,
+		}
+	}
+	return nil
 }
 
 // CertSummary 是 LIST certs/ 返回的证书摘要。
 type CertSummary struct {
+	ID         string   `json:"id,omitempty" mapstructure:"id"`
+	CertID     string   `json:"cert_id,omitempty" mapstructure:"cert_id"`
+	CacheKey   string   `json:"cache_key" mapstructure:"cache_key"`
 	CommonName string   `json:"common_name" mapstructure:"common_name"`
 	Domains    []string `json:"domains" mapstructure:"domains"`
 	Role       string   `json:"role" mapstructure:"role"`
 	Account    string   `json:"account" mapstructure:"account"`
 	NotBefore  string   `json:"not_before,omitempty" mapstructure:"not_before"`
 	NotAfter   string   `json:"not_after,omitempty" mapstructure:"not_after"`
-	CacheKey   string   `json:"cache_key" mapstructure:"cache_key"`
 }
 
-// CertDetail 是 GET certs/{role}/{cn} 返回的证书详细实体。
+// ShortID 返回前 12 位的短 ID (类似 Docker 容器短 ID)。
+func ShortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// GetID 返回该证书的全局唯一缓存标识 (Cert ID / CacheKey)。
+func (c *CertSummary) GetID() string {
+	if c.ID != "" {
+		return c.ID
+	}
+	if c.CertID != "" {
+		return c.CertID
+	}
+	return c.CacheKey
+}
+
+// GetShortID 返回 12 位的短 ID。
+func (c *CertSummary) GetShortID() string {
+	return ShortID(c.GetID())
+}
+
+// CertDetail 是 GET certs/{role}/{cn} 或 GET certs/id/{id} 返回的证书详细实体。
 type CertDetail struct {
+	ID             string   `json:"id,omitempty" mapstructure:"id"`
+	CertID         string   `json:"cert_id,omitempty" mapstructure:"cert_id"`
+	CacheKey       string   `json:"cache_key" mapstructure:"cache_key"`
 	CommonName     string   `json:"common_name" mapstructure:"common_name"`
 	Domains        []string `json:"domains" mapstructure:"domains"`
 	Role           string   `json:"role" mapstructure:"role"`
@@ -118,7 +189,22 @@ type CertDetail struct {
 	NotBefore      string   `json:"not_before,omitempty" mapstructure:"not_before"`
 	NotAfter       string   `json:"not_after,omitempty" mapstructure:"not_after"`
 	NeedsRenewal   bool     `json:"needs_renewal" mapstructure:"needs_renewal"`
-	CacheKey       string   `json:"cache_key" mapstructure:"cache_key"`
+}
+
+// GetID 返回该证书的全局唯一标识。
+func (c *CertDetail) GetID() string {
+	if c.ID != "" {
+		return c.ID
+	}
+	if c.CertID != "" {
+		return c.CertID
+	}
+	return c.CacheKey
+}
+
+// GetShortID 返回 12 位的短 ID。
+func (c *CertDetail) GetShortID() string {
+	return ShortID(c.GetID())
 }
 
 // PruneJobOptions 定义清理 Job 的过滤条件。

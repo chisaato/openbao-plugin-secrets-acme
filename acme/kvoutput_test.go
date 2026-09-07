@@ -13,7 +13,8 @@ import (
 )
 
 type recordingKVWriter struct {
-	writes []kvWrite
+	writes  []kvWrite
+	deletes []kvDelete
 }
 
 type kvWrite struct {
@@ -21,8 +22,17 @@ type kvWrite struct {
 	data                     map[string]interface{}
 }
 
+type kvDelete struct {
+	clientToken, mount, path string
+}
+
 func (w *recordingKVWriter) Write(ctx context.Context, clientToken, mount, path string, data map[string]interface{}) error {
 	w.writes = append(w.writes, kvWrite{clientToken, mount, path, data})
+	return nil
+}
+
+func (w *recordingKVWriter) Delete(ctx context.Context, clientToken, mount, path string) error {
+	w.deletes = append(w.deletes, kvDelete{clientToken, mount, path})
 	return nil
 }
 
@@ -33,8 +43,7 @@ func TestSanitizeCN(t *testing.T) {
 }
 
 func TestOutputKVPath(t *testing.T) {
-	require.Equal(t, "certs/web/_wildcard.example.com", outputKVPath("web", "*.example.com"))
-	require.Equal(t, "certs/web/www.example.com", outputKVPath("web", "www.example.com"))
+	require.Equal(t, "certs/abc12345", outputKVPath("abc12345"))
 }
 
 func TestWriteCertOutput(t *testing.T) {
@@ -44,7 +53,7 @@ func TestWriteCertOutput(t *testing.T) {
 
 	// 未配置 output_kv_mount → no-op
 	path, err := b.writeCertOutput(context.Background(), &logical.Request{ClientToken: "tok"},
-		"web", &roleEntry{}, "a.com",
+		"web", &roleEntry{}, "id1",
 		&cacheEntry{CertificatePEM: "C", PrivateKeyPEM: "K"})
 	require.NoError(t, err)
 	require.Equal(t, "", path)
@@ -56,19 +65,34 @@ func TestWriteCertOutput(t *testing.T) {
 	notAfter := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
 	certPEM := selfSignedCertFor(t, notBefore, notAfter)
 	path, err = b.writeCertOutput(context.Background(), &logical.Request{ClientToken: "tok"},
-		"web", &roleEntry{OutputKVMount: "kv-certs"}, "*.example.com",
-		&cacheEntry{CertificatePEM: certPEM, PrivateKeyPEM: "K", IssuerCertificatePEM: "I",
+		"web", &roleEntry{Account: "acc1", OutputKVMount: "kv-certs"}, "mock-cert-id-123",
+		&cacheEntry{CN: "*.example.com", CertificatePEM: certPEM, PrivateKeyPEM: "K", IssuerCertificatePEM: "I",
 			Domains: []string{"*.example.com"}})
 	require.NoError(t, err)
-	require.Equal(t, "certs/web/_wildcard.example.com", path)
+	require.Equal(t, "certs/mock-cert-id-123", path)
 	require.Len(t, w.writes, 1)
 	// 传递调用者 token
 	require.Equal(t, "tok", w.writes[0].clientToken)
 	require.Equal(t, "kv-certs", w.writes[0].mount)
+
+	// 标准 acme.sh 资产字段
+	require.Equal(t, certPEM, w.writes[0].data["cert"])
+	require.Equal(t, "K", w.writes[0].data["key"])
+	require.Equal(t, "I", w.writes[0].data["ca"])
+	require.Equal(t, certPEM+"\nI", w.writes[0].data["fullchain"])
+
+	// 保持原有兼容别名
 	require.Equal(t, certPEM, w.writes[0].data["certificate"])
 	require.Equal(t, "K", w.writes[0].data["private_key"])
 	require.Equal(t, "I", w.writes[0].data["issuer_cert"])
+
+	// 扁平元数据
+	require.Equal(t, "mock-cert-id-123", w.writes[0].data["cert_id"])
+	require.Equal(t, "*.example.com", w.writes[0].data["common_name"])
+	require.Equal(t, "web", w.writes[0].data["role"])
+	require.Equal(t, "acc1", w.writes[0].data["account"])
 	require.Equal(t, []string{"*.example.com"}, w.writes[0].data["domains"])
+
 	// 有效期：RFC3339 可解析且等于夹具证书的 NotBefore/NotAfter（UTC）
 	nb, ok := w.writes[0].data["not_before"].(string)
 	require.True(t, ok, "not_before 须为 RFC3339 字符串")
@@ -88,7 +112,7 @@ func TestWriteCertOutput(t *testing.T) {
 func newKVPutServer(t *testing.T, capture *map[string]interface{}) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/kv-certs/data/certs/web/www.example.com", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/kv-certs/data/certs/test-cert-id-123", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Vault-Token"); got != pluginEnvToken {
 			t.Errorf("应以插件 env token 身份请求: got %q", got)
 			w.WriteHeader(http.StatusForbidden)
@@ -116,7 +140,7 @@ func TestAPIKVWriterPut(t *testing.T) {
 	t.Setenv("BAO_TOKEN", pluginEnvToken)
 
 	w := &apiKVWriter{}
-	err := w.Write(context.Background(), "hashed-caller-token", "kv-certs", "certs/web/www.example.com",
+	err := w.Write(context.Background(), "hashed-caller-token", "kv-certs", "certs/test-cert-id-123",
 		map[string]interface{}{"certificate": "C"})
 	require.NoError(t, err)
 	require.Equal(t, "C", capture["data"].(map[string]interface{})["certificate"])
@@ -127,8 +151,8 @@ func TestAPIKVWriterErrorContainsMountPath(t *testing.T) {
 	t.Setenv("BAO_ADDR", "http://127.0.0.1:1")
 
 	w := &apiKVWriter{}
-	err := w.Write(context.Background(), "tok", "kv-certs", "certs/web/www.example.com",
+	err := w.Write(context.Background(), "tok", "kv-certs", "certs/test-cert-id-123",
 		map[string]interface{}{"certificate": "C"})
 	require.Error(t, err)
-	require.ErrorContains(t, err, "kv-certs/certs/web/www.example.com")
+	require.ErrorContains(t, err, "kv-certs/certs/test-cert-id-123")
 }

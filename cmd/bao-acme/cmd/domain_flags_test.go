@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -36,13 +36,13 @@ func TestCLICertIssueDomainFlags(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	cmd := rootCmd
+	cmd := NewRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
 	// 使用类似 acme.sh 的 -d domain1 -d domain2 -d domain3
-	cmd = newRootCmd()
+	cmd = NewRootCmd()
 	buf = new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)

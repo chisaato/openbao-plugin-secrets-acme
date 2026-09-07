@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -61,7 +61,7 @@ func TestCLICertIssueFlow(t *testing.T) {
 	keyOut := filepath.Join(tmpDir, "key.pem")
 
 	// 测试 CLI 命令
-	cmd := newRootCmd()
+	cmd := NewRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)

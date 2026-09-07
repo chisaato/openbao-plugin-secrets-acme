@@ -25,6 +25,8 @@ func pathCerts(b *backend) []*framework.Path {
 			"skip_propagation_check": {Type: framework.TypeBool, Description: "单次签发覆盖：跳过 lego 本地 DNS 传播预检。"},
 			"propagation_wait":       {Type: framework.TypeDurationSecond, Description: "单次签发覆盖：DNS 写入后的等待秒数。"},
 			"resolvers":              {Type: framework.TypeCommaStringSlice, Description: "单次签发覆盖：自定义递归 DNS 服务器列表（如 223.5.5.5:53）。"},
+			"force":                  {Type: framework.TypeBool, Description: "强制签发全新证书：跳过精确缓存与覆盖复用分支，直接向 CA 申请。"},
+			"force_new":              {Type: framework.TypeBool, Description: "强制签发全新证书 (同 force)。"},
 		},
 		ExistenceCheck: func(ctx context.Context, req *logical.Request, d *framework.FieldData) (bool, error) {
 			role, err := b.getRole(ctx, req.Storage, d.Get("role").(string))
@@ -159,9 +161,18 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 	}
 
 	key := cacheKey(role, domains)
+
+	forceNew := false
+	if f, ok := d.GetOk("force"); ok {
+		forceNew = f.(bool)
+	}
+	if f, ok := d.GetOk("force_new"); ok && f.(bool) {
+		forceNew = true
+	}
+
 	// 1) 缓存命中且未到期（certNeedsRenewal=false）→ Users++ 直接返回；
-	//    已到期缓存视为 miss，落入下方重签。
-	if !role.DisableCache {
+	//    若设置了 forceNew，则直接跳过缓存命中与覆盖复用。
+	if !role.DisableCache && !forceNew {
 		entry, err := b.cacheGet(ctx, req.Storage, key)
 		if err != nil {
 			return nil, err
@@ -191,21 +202,23 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 
 	// 1.5) 覆盖复用：同 account 已签发证书覆盖全部请求域名 → 同步返回
 	// （spec §5）。命中语义与精确命中一致：Users++、不重写 KV、正常建 lease。
-	if reuseEntry, rkey, rerr := b.findReusableEntry(ctx, req.Storage, role, domains); rerr != nil {
-		return nil, rerr
-	} else if reuseEntry != nil {
-		if uerr := b.cacheUpdate(ctx, req.Storage, rkey, func(e *cacheEntry) *cacheEntry {
-			e.Users++
-			return e
-		}); uerr != nil {
-			return nil, uerr
+	if !forceNew {
+		if reuseEntry, rkey, rerr := b.findReusableEntry(ctx, req.Storage, role, domains); rerr != nil {
+			return nil, rerr
+		} else if reuseEntry != nil {
+			if uerr := b.cacheUpdate(ctx, req.Storage, rkey, func(e *cacheEntry) *cacheEntry {
+				e.Users++
+				return e
+			}); uerr != nil {
+				return nil, uerr
+			}
+			resp, rerr := b.respondWithCert(ctx, req, roleName, role, reuseEntry, rkey, false, b.reuseKVPath(ctx, req.Storage, roleName, role, reuseEntry, rkey))
+			if rerr != nil {
+				return logical.ErrorResponse("签发失败: %v", rerr), nil
+			}
+			resp.Data["reused"] = true
+			return resp, nil
 		}
-		resp, rerr := b.respondWithCert(ctx, req, roleName, role, reuseEntry, rkey, false, b.reuseKVPath(ctx, req.Storage, roleName, role, reuseEntry))
-		if rerr != nil {
-			return logical.ErrorResponse("签发失败: %v", rerr), nil
-		}
-		resp.Data["reused"] = true
-		return resp, nil
 	}
 
 	// 1.8) 解析 DNS-01 覆盖参数
@@ -356,7 +369,7 @@ func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, rol
 	kvPath := ""
 	if freshIssue {
 		var err error
-		kvPath, err = b.writeCertOutput(ctx, req, roleName, role, entry.CN, entry)
+		kvPath, err = b.writeCertOutput(ctx, req, roleName, role, key, entry)
 		if err != nil {
 			// 不变式：签发成功+KV 成功 = Users=1 = lease 数。KV 失败时响应无
 			// Secret、core 不会建 lease，残留条目（Users≥1）将无人释放成为孤儿
@@ -375,7 +388,7 @@ func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, rol
 		kvPath = kvPathOverride
 	} else if role.OutputKVMount != "" {
 		// 命中路径不重写 KV：output_path 指向签发时已写入的既有数据。
-		kvPath = outputKVPath(roleName, entry.CN)
+		kvPath = outputKVPath(key)
 	}
 	notBefore, notAfter := certValidity(entry.CertificatePEM)
 	resp := b.issueResponse(entry, key, role.Account, roleName, kvPath)
@@ -387,14 +400,6 @@ func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, rol
 		resp.Secret.LeaseOptions.MaxTTL = time.Until(notAfter)
 	}
 	return resp, nil
-}
-
-// certValidity 解析证书有效期（UTC）；解析失败返回零值。
-func certValidity(certPEM string) (time.Time, time.Time) {
-	if cert, err := certcrypto.ParsePEMCertificate([]byte(certPEM)); err == nil {
-		return cert.NotBefore.UTC(), cert.NotAfter.UTC()
-	}
-	return time.Time{}, time.Time{}
 }
 
 // issueResponse 组装签发/缓存命中响应；InternalData 供 Renew/Revoke 定位

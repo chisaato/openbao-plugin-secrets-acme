@@ -437,13 +437,19 @@ func TestAcceptanceFullPipeline(t *testing.T) {
 	require.NotEmpty(t, certPEM1, "签发响应应含 certificate")
 	require.NotEmpty(t, issue1.Data["private_key"], "签发响应应含 private_key")
 	outputPath, _ := issue1.Data["output_path"].(string)
-	require.Equal(t, "certs/web/example.com", outputPath)
+	require.NotEmpty(t, outputPath)
+	require.Contains(t, outputPath, "certs/")
 	require.NotEmpty(t, issue1.Data["url"], "签发响应应含 cert url")
 
-	kv, err := client.KVv2("secret").Get(ctx, "certs/web/example.com")
+	kv, err := client.KVv2("secret").Get(ctx, outputPath)
 	require.NoError(t, err, "KV 输出读回失败")
 	require.Equal(t, certPEM1, kv.Data["certificate"], "KV 输出 certificate 应与签发响应一致")
+	require.Equal(t, certPEM1, kv.Data["cert"], "KV 输出 cert 应与签发响应一致")
 	require.Equal(t, issue1.Data["private_key"], kv.Data["private_key"])
+	require.Equal(t, issue1.Data["private_key"], kv.Data["key"])
+	require.NotEmpty(t, kv.Data["fullchain"])
+	require.Equal(t, "example.com", kv.Data["common_name"])
+	require.Equal(t, "web", kv.Data["role"])
 	// JSON 反序列化后 domains 为 []interface{}。
 	require.Equal(t, []any{"example.com"}, kv.Data["domains"])
 
@@ -456,7 +462,7 @@ func TestAcceptanceFullPipeline(t *testing.T) {
 	// 命中路径纯读不写 KV，但 output_path 仍指向签发时写入的既有数据。
 	require.Equal(t, outputPath, issue2.Data["output_path"])
 	// I-2：缓存命中不得产生 KV 新版本（签发时 version 1，命中后仍只有 1 版）。
-	meta, err := client.KVv2("secret").GetMetadata(ctx, "certs/web/example.com")
+	meta, err := client.KVv2("secret").GetMetadata(ctx, outputPath)
 	require.NoError(t, err, "读取 KV metadata 失败")
 	require.Len(t, meta.Versions, 1, "缓存命中不得重写 KV（版本数应保持 1）")
 

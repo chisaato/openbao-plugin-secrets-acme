@@ -2,11 +2,8 @@ package acme
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/openbao/openbao/sdk/v2/framework"
 	"github.com/openbao/openbao/sdk/v2/logical"
@@ -65,7 +62,24 @@ func pathCertsExtended(b *backend) []*framework.Path {
 				},
 			},
 		},
-		// 4. GET/DELETE certs/{role}/{cn}
+		// 4. GET/DELETE certs/id/{id} (直接通过 Cert ID / CacheKey 检索，毫无歧义)
+		{
+			Pattern: "certs/id/" + framework.GenericNameRegex("id") + "$",
+			Fields: map[string]*framework.FieldSchema{
+				"id": {Type: framework.TypeString, Description: "证书唯一标识 CacheKey / Cert ID"},
+			},
+			Operations: map[logical.Operation]framework.OperationHandler{
+				logical.ReadOperation: &framework.PathOperation{
+					Summary:  "通过 Cert ID 获取指定证书详情",
+					Callback: b.pathCertGetByID,
+				},
+				logical.DeleteOperation: &framework.PathOperation{
+					Summary:  "通过 Cert ID 撤销并删除指定证书",
+					Callback: b.pathCertRevokeByID,
+				},
+			},
+		},
+		// 5. GET/DELETE certs/{role}/{cn}
 		{
 			Pattern: "certs/" + framework.GenericNameRegex("role") + "/" + framework.MatchAllRegex("cn") + "$",
 			Fields: map[string]*framework.FieldSchema{
@@ -88,25 +102,15 @@ func pathCertsExtended(b *backend) []*framework.Path {
 
 // certSummary 表示 LIST 时的摘要条目
 type certSummary struct {
+	ID         string   `json:"id"`
+	CertID     string   `json:"cert_id"`
+	CacheKey   string   `json:"cache_key"`
 	CommonName string   `json:"common_name"`
 	Domains    []string `json:"domains"`
 	Role       string   `json:"role"`
 	Account    string   `json:"account"`
 	NotBefore  string   `json:"not_before,omitempty"`
 	NotAfter   string   `json:"not_after,omitempty"`
-	CacheKey   string   `json:"cache_key"`
-}
-
-func parseCertDates(certPEM string) (string, string) {
-	block, _ := pem.Decode([]byte(certPEM))
-	if block == nil {
-		return "", ""
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", ""
-	}
-	return cert.NotBefore.UTC().Format(time.RFC3339), cert.NotAfter.UTC().Format(time.RFC3339)
 }
 
 func (b *backend) pathCertListAll(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
@@ -124,13 +128,15 @@ func (b *backend) pathCertListAll(ctx context.Context, req *logical.Request, d *
 		}
 		nb, na := parseCertDates(entry.CertificatePEM)
 		results = append(results, certSummary{
+			ID:         k,
+			CertID:     k,
+			CacheKey:   k,
 			CommonName: entry.CN,
 			Domains:    entry.Domains,
 			Role:       entry.Role,
 			Account:    entry.Account,
 			NotBefore:  nb,
 			NotAfter:   na,
-			CacheKey:   k,
 		})
 		cnList = append(cnList, entry.CN)
 	}
@@ -162,13 +168,15 @@ func (b *backend) pathCertListByRole(ctx context.Context, req *logical.Request, 
 		}
 		nb, na := parseCertDates(entry.CertificatePEM)
 		results = append(results, certSummary{
+			ID:         k,
+			CertID:     k,
+			CacheKey:   k,
 			CommonName: entry.CN,
 			Domains:    entry.Domains,
 			Role:       entry.Role,
 			Account:    entry.Account,
 			NotBefore:  nb,
 			NotAfter:   na,
-			CacheKey:   k,
 		})
 		cnList = append(cnList, entry.CN)
 	}
@@ -221,6 +229,8 @@ func (b *backend) pathCertGet(ctx context.Context, req *logical.Request, d *fram
 
 	return &logical.Response{
 		Data: map[string]any{
+			"id":               key,
+			"cert_id":          key,
 			"common_name":      entry.CN,
 			"domains":          entry.Domains,
 			"role":             entry.Role,
@@ -234,6 +244,139 @@ func (b *backend) pathCertGet(ctx context.Context, req *logical.Request, d *fram
 			"not_after":        na,
 			"needs_renewal":    needsRenew,
 			"cache_key":        key,
+		},
+	}, nil
+}
+
+// resolveCertByID 通过全量 ID 或前缀查找证书条目。
+// 规则：
+// 1. 若精确命中，直接返回；
+// 2. 若前缀匹配（长度 >= 4）：
+//    - 命中唯 1 个则返回；
+//    - 命中 > 1 个返回歧义错误；
+//    - 未命中返回 nil, "", nil (404)。
+func (b *backend) resolveCertByID(ctx context.Context, s logical.Storage, queryID string) (*cacheEntry, string, error) {
+	queryID = strings.TrimSpace(queryID)
+	if queryID == "" {
+		return nil, "", nil
+	}
+
+	// 1. 尝试精确查找
+	entry, err := b.cacheGet(ctx, s, queryID)
+	if err != nil {
+		return nil, "", err
+	}
+	if entry != nil {
+		return entry, queryID, nil
+	}
+
+	// 2. 若长度小于 4，为了防止过大范围模糊匹配碰撞，拒绝前缀查找
+	if len(queryID) < 4 {
+		return nil, "", nil
+	}
+
+	keys, err := s.List(ctx, storageKeyCache)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var matchedKeys []string
+	for _, k := range keys {
+		if strings.HasPrefix(strings.ToLower(k), strings.ToLower(queryID)) {
+			matchedKeys = append(matchedKeys, k)
+		}
+	}
+
+	if len(matchedKeys) == 0 {
+		return nil, "", nil
+	}
+	if len(matchedKeys) > 1 {
+		return nil, "", fmt.Errorf("ambiguous cert ID prefix %q matches %d certificates", queryID, len(matchedKeys))
+	}
+
+	exactKey := matchedKeys[0]
+	entry, err = b.cacheGet(ctx, s, exactKey)
+	if err != nil {
+		return nil, "", err
+	}
+	return entry, exactKey, nil
+}
+
+func (b *backend) pathCertGetByID(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	queryID := d.Get("id").(string)
+	entry, certID, err := b.resolveCertByID(ctx, req.Storage, queryID)
+	if err != nil {
+		return logical.ErrorResponse("%v", err), nil
+	}
+	if entry == nil {
+		return nil, nil // 404
+	}
+
+	nb, na := parseCertDates(entry.CertificatePEM)
+	role, _ := b.getRole(ctx, req.Storage, entry.Role)
+	needsRenew := false
+	if role != nil {
+		needsRenew = certNeedsRenewal(entry.CertificatePEM, role.CacheForRatio)
+	}
+
+	return &logical.Response{
+		Data: map[string]any{
+			"id":               certID,
+			"cert_id":          certID,
+			"common_name":      entry.CN,
+			"domains":          entry.Domains,
+			"role":             entry.Role,
+			"account":          entry.Account,
+			"certificate":      entry.CertificatePEM,
+			"private_key":      entry.PrivateKeyPEM,
+			"issuer_cert":      entry.IssuerCertificatePEM,
+			"url":              entry.CertURL,
+			"cert_stable_url":  entry.CertStableURL,
+			"not_before":       nb,
+			"not_after":        na,
+			"needs_renewal":    needsRenew,
+			"cache_key":        certID,
+		},
+	}, nil
+}
+
+func (b *backend) pathCertRevokeByID(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	queryID := d.Get("id").(string)
+	entry, certID, err := b.resolveCertByID(ctx, req.Storage, queryID)
+	if err != nil {
+		return logical.ErrorResponse("%v", err), nil
+	}
+	if entry == nil {
+		return nil, nil
+	}
+
+	// 1. 尝试向 CA 真撤销
+	if account, aerr := b.getAccount(ctx, req.Storage, entry.Account); aerr == nil && account != nil {
+		if user, uerr := account.legoUser(); uerr == nil {
+			if client, cerr := newLegoClient(user, account.ServerURL, account.InsecureTLS); cerr == nil {
+				_ = client.Certificate.Revoke(ctx, []byte(entry.CertificatePEM))
+			}
+		}
+	}
+
+	// 2. 从 cache 中删除
+	if err := b.cacheDelete(ctx, req.Storage, certID); err != nil {
+		return nil, err
+	}
+
+	// 3. 联动清理 KV 证书输出（尽力而为）
+	if entry.Role != "" {
+		if role, rerr := b.getRole(ctx, req.Storage, entry.Role); rerr == nil && role != nil && role.OutputKVMount != "" {
+			_ = b.deleteCertOutput(ctx, req.ClientToken, role.OutputKVMount, certID)
+		}
+	}
+
+	return &logical.Response{
+		Data: map[string]any{
+			"revoked":     true,
+			"id":          certID,
+			"common_name": entry.CN,
+			"role":        entry.Role,
 		},
 	}, nil
 }
@@ -262,6 +405,13 @@ func (b *backend) pathCertRevoke(ctx context.Context, req *logical.Request, d *f
 	// 2. 从 cache 中删除
 	if err := b.cacheDelete(ctx, req.Storage, key); err != nil {
 		return nil, err
+	}
+
+	// 3. 联动清理 KV 证书输出（尽力而为）
+	if entry.Role != "" {
+		if role, rerr := b.getRole(ctx, req.Storage, entry.Role); rerr == nil && role != nil && role.OutputKVMount != "" {
+			_ = b.deleteCertOutput(ctx, req.ClientToken, role.OutputKVMount, key)
+		}
 	}
 
 	return &logical.Response{

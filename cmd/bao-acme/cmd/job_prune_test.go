@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -85,7 +85,7 @@ func TestCLIJobPruneAndListFormatting(t *testing.T) {
 	defer srv.Close()
 
 	// 1. 测试 job list tabwriter 排版
-	cmdList := newRootCmd()
+	cmdList := NewRootCmd()
 	bufList := new(bytes.Buffer)
 	cmdList.SetOut(bufList)
 	cmdList.SetErr(bufList)
@@ -105,7 +105,7 @@ func TestCLIJobPruneAndListFormatting(t *testing.T) {
 	assert.Contains(t, listOut, "job-proc")
 
 	// 2. 测试 job prune --failed-only -y
-	cmdPrune := newRootCmd()
+	cmdPrune := NewRootCmd()
 	bufPrune := new(bytes.Buffer)
 	cmdPrune.SetOut(bufPrune)
 	cmdPrune.SetErr(bufPrune)
@@ -127,7 +127,7 @@ func TestCLIJobPruneAndListFormatting(t *testing.T) {
 	assert.False(t, deletedIDs["job-proc"], "processing 不应被清理")
 
 	// 3. 测试 job prune 全量 -y
-	cmdPruneAll := newRootCmd()
+	cmdPruneAll := NewRootCmd()
 	bufPruneAll := new(bytes.Buffer)
 	cmdPruneAll.SetOut(bufPruneAll)
 	cmdPruneAll.SetErr(bufPruneAll)

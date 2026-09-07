@@ -369,6 +369,9 @@ func (c *Client) IssueCert(ctx context.Context, role string, opts api.IssueOptio
 	if len(opts.Resolvers) > 0 {
 		data["resolvers"] = opts.Resolvers
 	}
+	if opts.Force {
+		data["force"] = true
+	}
 
 	sec, err := c.bao.Logical().WriteWithContext(ctx, c.p("certs/"+role), data)
 	if err != nil {
@@ -415,6 +418,29 @@ func (c *Client) ListCerts(ctx context.Context, role string) ([]api.CertSummary,
 		}
 	}
 	return results, nil
+}
+
+// GetCertByID 通过证书唯一标识 (Cert ID / CacheKey) 获取证书详情。
+func (c *Client) GetCertByID(ctx context.Context, id string) (*api.CertDetail, error) {
+	sec, err := c.bao.Logical().ReadWithContext(ctx, c.p("certs/id/"+id))
+	if err != nil {
+		return nil, err
+	}
+	if sec == nil || sec.Data == nil {
+		return nil, fmt.Errorf("certificate with id %q not found", id)
+	}
+
+	res := &api.CertDetail{}
+	if err := decodeData(sec.Data, res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// RevokeCertByID 通过证书唯一标识 (Cert ID / CacheKey) 撤销并清理证书。
+func (c *Client) RevokeCertByID(ctx context.Context, id string) error {
+	_, err := c.bao.Logical().DeleteWithContext(ctx, c.p("certs/id/"+id))
+	return err
 }
 
 // GetCert 获取指定 role 下特定 CN 的证书详情。

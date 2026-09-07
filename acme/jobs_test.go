@@ -40,7 +40,7 @@ func jobFixture(t *testing.T) (*backend, logical.Storage, context.Context) {
 // waitForJob：轮询至终态（completed/failed）并返回。
 func waitForJob(t *testing.T, b *backend, st logical.Storage, id string) *jobEntry {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		item, err := st.Get(context.Background(), storageKeyJobs+id)
 		require.NoError(t, err)

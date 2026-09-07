@@ -271,7 +271,7 @@ func TestIssueCacheHitResponse(t *testing.T) {
 
 	// I-2：命中路径纯读——不得产生任何 KV 写（否则 KVv2 历史膨胀）。
 	require.Empty(t, w.writes, "缓存命中不得重写 KV")
-	require.Equal(t, "certs/web/example.com", resp.Data["output_path"],
+	require.Equal(t, "certs/"+key, resp.Data["output_path"],
 		"output_path 应指向签发时写入的既有数据")
 
 	// not_before/not_after：存在、RFC3339 可解析、等于夹具证书有效期
@@ -347,6 +347,10 @@ func (w *failingKVWriter) Write(ctx context.Context, clientToken, mount, path st
 	return w.err
 }
 
+func (w *failingKVWriter) Delete(ctx context.Context, clientToken, mount, path string) error {
+	return w.err
+}
+
 // TestCacheHitPureReadNoKVWrite（I-2）：缓存命中纯读——即便 KV writer 故障，
 // 命中也必须成功且不得删除共享条目（否则 Users≥2 的在用引用被孤立；KV 持续
 // 故障期间每次重试也不会退化为完整 ACME Obtain）。
@@ -364,7 +368,7 @@ func TestCacheHitPureReadNoKVWrite(t *testing.T) {
 	resp, err := b.HandleRequest(ctx, issueRequest(ctx, storage))
 	require.NoError(t, err)
 	require.False(t, resp.IsError(), "命中路径不应因 KV 故障失败: %v", resp)
-	require.Equal(t, "certs/web/example.com", resp.Data["output_path"])
+	require.Equal(t, "certs/"+key, resp.Data["output_path"])
 
 	entry, err := b.cacheGet(ctx, storage, key)
 	require.NoError(t, err)
@@ -441,7 +445,7 @@ func TestIssueCoverageReuse(t *testing.T) {
 	require.False(t, resp.IsError(), "覆盖复用应同步成功: %v", resp)
 	require.Equal(t, true, resp.Data["reused"])
 	require.NotEmpty(t, resp.Data["certificate"])
-	require.Equal(t, "certs/web/_wildcard.example.com", resp.Data["output_path"],
+	require.Equal(t, "certs/"+key, resp.Data["output_path"],
 		"output_path 应指向签发 role 名下的既有数据")
 
 	entry, err := b.cacheGet(ctx, storage, key)

@@ -84,16 +84,16 @@ func (b *backend) findReusableEntry(ctx context.Context, s logical.Storage, role
 // reuseKVPath：复用响应的 output_path 指向签发时真实写入的位置。
 // 跨 role 复用时按签发 role 的 output_kv_mount 解析；签发 role 已删除或
 // 未配 KV 输出则省略 output_path（指向不存在的路径会误导调用方）。
-func (b *backend) reuseKVPath(ctx context.Context, s logical.Storage, roleName string, role *roleEntry, entry *cacheEntry) string {
+func (b *backend) reuseKVPath(ctx context.Context, s logical.Storage, roleName string, role *roleEntry, entry *cacheEntry, certID string) string {
 	if entry.Role != "" && entry.Role != roleName {
 		issuer, err := b.getRole(ctx, s, entry.Role)
 		if err != nil || issuer == nil || issuer.OutputKVMount == "" {
 			return ""
 		}
-		return outputKVPath(entry.Role, entry.CN)
+		return outputKVPath(certID)
 	}
 	if role.OutputKVMount == "" {
 		return ""
 	}
-	return outputKVPath(roleName, entry.CN)
+	return outputKVPath(certID)
 }

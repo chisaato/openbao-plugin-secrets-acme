@@ -92,7 +92,7 @@ func pathRoles(b *backend) []*framework.Path {
 		"disable_cache":      {Type: framework.TypeBool, Description: "禁用证书缓存（每次真签发）。"},
 		"disable_cert_reuse": {Type: framework.TypeBool, Description: "禁用 account 级证书覆盖复用（泛域名服务单域请求）。"},
 		"cache_for_ratio":    {Type: framework.TypeInt, Default: 70, Description: "剩余寿命低于总寿命该百分比时重签；(0,100]。"},
-		"output_kv_mount":    {Type: framework.TypeString, Description: "证书同步输出到该 KV mount（certs/{role}/{cn}）；空=不输出。"},
+		"output_kv_mount":    {Type: framework.TypeString, Description: "证书同步输出到该 KV mount（certs/{cert_id}）；空=不输出。"},
 	}
 	entry := &framework.Path{
 		Pattern: "roles/" + framework.GenericNameRegex("name"),

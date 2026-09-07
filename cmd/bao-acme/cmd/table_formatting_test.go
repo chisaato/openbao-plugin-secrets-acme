@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -104,7 +104,7 @@ func TestCLITableFormattingOutputs(t *testing.T) {
 	defer srv.Close()
 
 	// Account List
-	cmdAcc := newRootCmd()
+	cmdAcc := NewRootCmd()
 	bufAcc := new(bytes.Buffer)
 	cmdAcc.SetOut(bufAcc)
 	cmdAcc.SetArgs([]string{"--address", srv.URL, "--token", "t", "account", "list"})
@@ -113,7 +113,7 @@ func TestCLITableFormattingOutputs(t *testing.T) {
 	assert.Contains(t, bufAcc.String(), "letsencrypt-prod")
 
 	// Provider List
-	cmdProv := newRootCmd()
+	cmdProv := NewRootCmd()
 	bufProv := new(bytes.Buffer)
 	cmdProv.SetOut(bufProv)
 	cmdProv.SetArgs([]string{"--address", srv.URL, "--token", "t", "provider", "list"})
@@ -122,7 +122,7 @@ func TestCLITableFormattingOutputs(t *testing.T) {
 	assert.Contains(t, bufProv.String(), "cloudflare")
 
 	// Role List
-	cmdRole := newRootCmd()
+	cmdRole := NewRootCmd()
 	bufRole := new(bytes.Buffer)
 	cmdRole.SetOut(bufRole)
 	cmdRole.SetArgs([]string{"--address", srv.URL, "--token", "t", "role", "list"})
@@ -131,7 +131,7 @@ func TestCLITableFormattingOutputs(t *testing.T) {
 	assert.Contains(t, bufRole.String(), "80%")
 
 	// Cert List
-	cmdCert := newRootCmd()
+	cmdCert := NewRootCmd()
 	bufCert := new(bytes.Buffer)
 	cmdCert.SetOut(bufCert)
 	cmdCert.SetArgs([]string{"--address", srv.URL, "--token", "t", "cert", "list"})

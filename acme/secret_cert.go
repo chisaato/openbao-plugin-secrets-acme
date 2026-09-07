@@ -165,6 +165,16 @@ func (b *backend) certRevoke(ctx context.Context, req *logical.Request, d *frame
 				}
 			}
 		}
+		// 联动清理 KV 输出（尽力而为）
+		roleName := entry.Role
+		if roleName == "" {
+			roleName, _ = req.Secret.InternalData["role"].(string)
+		}
+		if roleName != "" {
+			if role, rerr := b.getRole(ctx, req.Storage, roleName); rerr == nil && role != nil && role.OutputKVMount != "" {
+				_ = b.deleteCertOutput(ctx, req.ClientToken, role.OutputKVMount, key)
+			}
+		}
 	}
 	return nil, nil
 }

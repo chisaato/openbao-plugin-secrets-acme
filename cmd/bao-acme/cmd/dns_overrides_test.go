@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -59,7 +59,7 @@ func TestCLIDNSOverridesAndResolvers(t *testing.T) {
 	defer srv.Close()
 
 	// 1. CLI provider set 支持 --resolvers, --skip-check, --prop-wait
-	cmdProv := newRootCmd()
+	cmdProv := NewRootCmd()
 	cmdProv.SetArgs([]string{
 		"--address", srv.URL,
 		"--token", "t",
@@ -76,7 +76,7 @@ func TestCLIDNSOverridesAndResolvers(t *testing.T) {
 	assert.Equal(t, []any{"223.5.5.5:53", "1.1.1.1:53"}, recordedProviderData["resolvers"])
 
 	// 2. CLI cert issue 支持单次覆盖 --skip-check, --prop-wait, --resolvers
-	cmdIssue := newRootCmd()
+	cmdIssue := NewRootCmd()
 	buf := new(bytes.Buffer)
 	cmdIssue.SetOut(buf)
 	cmdIssue.SetErr(buf)
