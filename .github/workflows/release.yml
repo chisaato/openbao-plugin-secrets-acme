@@ -1,7 +1,9 @@
-name: release
+name: Release
+
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -9,32 +11,37 @@ permissions:
 
 jobs:
   release:
+    name: Build & Publish Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          go-version: "1.26.x"
-      - uses: extractions/setup-just@v4
+          fetch-depth: 0
 
-      # 交叉编译全部平台（dist/）+ 本机 linux/amd64 构建（bin/，供镜像 COPY）+ SHA256SUMS
-      - run: just release
-
-      - name: Upload binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          files: |
-            dist/*
-          generate_release_notes: true
+          go-version: '1.26'
+          cache: true
 
-      - name: Login to ghcr.io
+      - name: Install Just
+        uses: extractions/setup-just@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract OCI metadata
+      - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -42,13 +49,26 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(github.ref, '-rc') }}
+            type=raw,value=latest
 
-      - name: Build and push OCI image
-        uses: docker/build-push-action@v6
+      - name: Build and push multi-arch OCI Image
+        uses: docker/build-push-action@v5
         with:
           context: .
-          file: Containerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+
+      - name: Cross-compile multi-platform binaries
+        run: |
+          just version=${{ github.ref_name }} release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+          generate_release_notes: true

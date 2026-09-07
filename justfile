@@ -48,8 +48,23 @@ fmt:
 clean:
     rm -rf bin/ dist/
 
-# 交叉编译全部平台到 dist/ 并生成 SHA256SUMS；依赖 build 使 bin/ 内保留本机
-# （linux/amd64）二进制，供 Containerfile COPY 进 ghcr OCI 镜像。
+# 构建本地 OCI 镜像（自动检测 podman / docker）
+build-image tag="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    IMG_TAG="{{ tag }}"
+    if [ -z "$IMG_TAG" ]; then
+        IMG_TAG="{{ plugin_name }}:{{ version }}"
+    fi
+    BUILDER="docker"
+    if command -v podman >/dev/null 2>&1; then
+        BUILDER="podman"
+    fi
+    echo "==> Building OCI image $IMG_TAG with $BUILDER..."
+    $BUILDER build --build-arg VERSION="{{ version }}" -t "$IMG_TAG" .
+    echo "✓ Image built successfully: $IMG_TAG"
+
+# 交叉编译全部平台到 dist/ 并生成 SHA256SUMS；
 # CGO_ENABLED=0：纯 Go 依赖，避免交叉编译时调用主机 gcc 汇编目标架构。
 release: build
     #!/usr/bin/env bash
