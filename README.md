@@ -63,4 +63,4 @@ bao-acme cert issue web --cn example.com --alt "*.example.com" \
 
 ## 许可证
 
-基于 Mozilla Public License 2.0 (MPL-2.0) 协议开源。
+基于 MIT 协议开源。详见 [LICENSE](LICENSE)。

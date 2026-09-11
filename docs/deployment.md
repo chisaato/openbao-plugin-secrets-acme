@@ -48,19 +48,31 @@ path "auth/token/renew-self" {
 
 ---
 
-## 3. 环境变量注入方式
+## 3. 环境变量与插件部署方式
 
-### 方式一：声明式 `config-plugins`（推荐，OpenBao ≥ 2.5.0）
+### 方式一：基于 OCI 镜像声明式部署（推荐，OpenBao ≥ 2.5.0）
 
-在 OpenBao 服务端配置 HCL 中声明：
+OpenBao 原生支持通过内置 OCI 客户端从容器镜像仓库（如 GitHub Container Registry `ghcr.io`）下载插件镜像并自动解压、验证校验和、注册和注入环境变量。**宿主机或容器内无需安装 Docker 或任何容器运行时**。
+
+#### OpenBao 服务端配置（`bao.hcl`）规范与细节
+
+> **⚠️ OpenBao 2.5 / 2.6 的 HCL 语法注意点**：
+> 1. `image` 字段**只能写仓库路径**（严禁带 `:tag` 或 `@sha256:...`），OpenBao 会自动将其与 `version` 拼接为 `image:version`。
+> 2. `version` 为必填字段，对应 OCI 镜像的 Tag（例如 `"0.2.0"` 或 `"v0.1.0"`）。
+> 3. `sha256sum` 为必填字段，必须是解压出来的**插件可执行二进制文件**的 64 位 SHA-256 哈希（可从 GitHub Release 的 SHA256SUMS 获取，或在本地用 `sha256sum openbao-plugin-secrets-acme` 计算），**不能使用 OCI 镜像层的 hash**。
 
 ```hcl
-plugin "secret" "acme" {
-  image       = "ghcr.io/chisaato/openbao-plugin-secrets-acme"
-  version     = "v0.1.0"
-  binary_name = "openbao-plugin-secrets-acme"
-  sha256sum   = "<SHA256>"
+plugin_directory     = "/opt/openbao/plugins"
+plugin_auto_download = true
+plugin_auto_register = true
 
+plugin "secret" "openbao-plugin-secrets-acme" {
+  image       = "ghcr.io/chisaato/openbao-plugin-secrets-acme"
+  version     = "0.2.0"
+  binary_name = "openbao-plugin-secrets-acme"
+  sha256sum   = "3a5ce05b2ba3425530fe772982cdbcaf221a90081dc4967702be373ab47ea80d"
+
+  # 插件进程环境注入：
   env = [
     "BAO_ADDR=https://openbao.internal:8200",
     "BAO_TOKEN=<插件服务身份 token>",
@@ -68,15 +80,37 @@ plugin "secret" "acme" {
 }
 ```
 
-### 方式二：传统 systemd unit 文件
+> **工作机制说明**：
+> - 当 `plugin_auto_download = true` 时，OpenBao 服务启动或接收 `SIGHUP` 时会自动从 Registry 拉取镜像，将二进制缓存在 `.oci-cache/` 中并软链接至 `plugin_directory`。
+> - 当 `plugin_auto_register = true` 时，OpenBao 在解封（unseal）后自动在系统插件 Catalog 中完成注册。
+> - 若使用私有 Registry，可在 OpenBao 进程宿主机配置 `~/.docker/config.json`，或设置环境变量 `REGISTRY_AUTH_FILE=/path/to/auth.json`。
+> - 支持通过命令手动提前下载并解包：`bao plugin init -config=/path/to/bao.hcl`。
 
-如果 OpenBao 运行在传统 Linux 虚拟机或物理机上，可直接编辑 systemd service 文件（例如 `/etc/systemd/system/openbao.service`）：
+### 方式二：传统本地二进制 + systemd unit 文件
+
+如果 OpenBao 运行在传统 Linux 虚拟机或物理机上且使用本地放置的二进制，可直接编辑 systemd service 文件（例如 `/etc/systemd/system/openbao.service`）：
 
 ```ini
 [Service]
 Environment="BAO_ADDR=https://openbao.internal:8200"
 Environment="BAO_TOKEN=<插件服务身份 token>"
 ```
+
+### 方式三：Kubernetes InitContainer 挂载模式
+
+在 Kubernetes 环境中，如果 OpenBao 容器节点无法直连公网/外部 Registry，可利用 Kubernetes Pod `initContainers` 配合共享卷分发二进制：
+
+```yaml
+initContainers:
+  - name: install-acme-plugin
+    image: ghcr.io/chisaato/openbao-plugin-secrets-acme:v0.1.0
+    command: ["cp", "/openbao-plugin-secrets-acme", "/plugins/openbao-plugin-secrets-acme"]
+    volumeMounts:
+      - name: plugin-volume
+        mountPath: /plugins
+```
+
+OpenBao 容器挂载同一 `plugin-volume` 到 `plugin_directory`，随后通过传统注册方式或声明式指定 `command` 即可运行。
 
 > **最佳实践**：服务身份 Token 请使用专用的 Policy + 定期轮换机制，严禁直接使用 `root` Token 或应用 Token。
 

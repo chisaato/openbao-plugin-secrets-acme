@@ -41,11 +41,15 @@
 在 OpenBao 服务端配置（HCL）中直接声明插件，由 core 自动拉取 OCI 镜像并注册挂载：
 
 ```hcl
-plugin "secret" "acme" {
+plugin_directory     = "/opt/openbao/plugins"
+plugin_auto_download = true
+plugin_auto_register = true
+
+plugin "secret" "openbao-plugin-secrets-acme" {
   image        = "ghcr.io/chisaato/openbao-plugin-secrets-acme"
-  version      = "v0.1.0"
+  version      = "0.2.0"
   binary_name  = "openbao-plugin-secrets-acme"
-  sha256sum    = "<发布产物的 SHA256，见 GitHub Release 的 SHA256SUMS>"
+  sha256sum    = "3a5ce05b2ba3425530fe772982cdbcaf221a90081dc4967702be373ab47ea80d"
 
   # 插件进程环境注入（关于 BAO_TOKEN 配置，见 deployment.md）：
   env = [
@@ -53,13 +57,6 @@ plugin "secret" "acme" {
     "BAO_TOKEN=<插件服务身份 token>",
   ]
 }
-```
-
-并在启动配置中开启自动下载/注册：
-
-```hcl
-plugin_auto_download = true
-plugin_auto_register = true
 ```
 
 随后即可直接通过 `bao secrets enable -path=acme openbao-plugin-secrets-acme` 启用（或由 OpenBao auto-register 自动挂载）。
