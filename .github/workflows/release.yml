@@ -28,9 +28,6 @@ jobs:
       - name: Install Just
         uses: extractions/setup-just@v2
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -40,6 +37,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 唯一编译点：镜像与 Release 附件共用 dist/ 产物，保证 SHA256SUMS 覆盖所有发布物。
+      - name: Cross-compile multi-platform binaries
+        run: |
+          just version=${{ github.ref_name }} release
 
       - name: Extract metadata for Docker
         id: meta
@@ -59,12 +61,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ github.ref_name }}
-
-      - name: Cross-compile multi-platform binaries
-        run: |
-          just version=${{ github.ref_name }} release
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

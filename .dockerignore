@@ -1,7 +1,6 @@
 data
 data/**
 bin
-dist
 .git
 .idea
 .vscode

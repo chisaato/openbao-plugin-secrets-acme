@@ -48,7 +48,8 @@ fmt:
 clean:
     rm -rf bin/ dist/
 
-# 构建本地 OCI 镜像（自动检测 podman / docker）
+# 构建本地 OCI 镜像（产物注入式：先交叉编译 linux/本机架构二进制到 dist/，Dockerfile 仅 COPY）。
+# 与 CI/Dockerfile 的约定一致：镜像内二进制 == dist/ 产物 == SHA256SUMS 清单。
 build-image tag="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -60,11 +61,18 @@ build-image tag="":
     if command -v podman >/dev/null 2>&1; then
         BUILDER="podman"
     fi
+    arch="$(go env GOARCH)"
+    echo "==> Cross-compiling linux/${arch} artifacts into dist/ ..."
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+        go build -ldflags '{{ ldflags }}' -o "dist/{{ plugin_name }}_linux_${arch}" ./cmd/plugin
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+        go build -ldflags '{{ ldflags }}' -o "dist/bao-acme_linux_${arch}" ./cmd/bao-acme
     echo "==> Building OCI image $IMG_TAG with $BUILDER..."
-    $BUILDER build --build-arg VERSION="{{ version }}" -t "$IMG_TAG" .
+    $BUILDER build -t "$IMG_TAG" .
     echo "✓ Image built successfully: $IMG_TAG"
 
-# 交叉编译全部平台到 dist/ 并生成 SHA256SUMS；
+# 交叉编译全部平台到 dist/ 并生成 SHA256SUMS（插件 + CLI，命名 linux_amd64 风格
+# 与 Dockerfile 的 ${TARGETOS}_${TARGETARCH} 占位约定一致）；
 # CGO_ENABLED=0：纯 Go 依赖，避免交叉编译时调用主机 gcc 汇编目标架构。
 release: build
     #!/usr/bin/env bash
@@ -75,6 +83,9 @@ release: build
         CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
             go build -ldflags '{{ ldflags }}' \
             -o "dist/{{ plugin_name }}_${os}_${arch}" ./cmd/plugin
+        CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+            go build -ldflags '{{ ldflags }}' \
+            -o "dist/bao-acme_${os}_${arch}" ./cmd/bao-acme
     done
     # 先清除上次运行的 SHA256SUMS：sha256sum * 会把旧清单卷入本次校验和，造成重跑污染。
     rm -f dist/SHA256SUMS
