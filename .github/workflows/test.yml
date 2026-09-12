@@ -22,9 +22,12 @@ jobs:
       - run: go install github.com/letsencrypt/pebble/v2/cmd/pebble@latest
       - run: go install github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.10.1
       - name: Install bao
+        # OpenBao v2.x 资产命名为 openbao_<ver>_linux_amd64.tar.gz（无版本无关的 zip），
+        # 需先取最新 tag 拼出下载地址。
         run: |
-          curl -sL https://github.com/openbao/openbao/releases/latest/download/openbao_linux_amd64.zip -o bao.zip
-          unzip -o bao.zip bao && sudo mv bao /usr/local/bin/
+          ver="$(curl -sL https://api.github.com/repos/openbao/openbao/releases/latest | jq -r .tag_name | sed 's/^v//')"
+          curl -sL "https://github.com/openbao/openbao/releases/download/v${ver}/openbao_${ver}_linux_amd64.tar.gz" -o bao.tgz
+          tar -xzf bao.tgz bao && sudo mv bao /usr/local/bin/
       - run: just vet
       - run: just test
       # testacc 目标自身在 test/ 独立 module 内运行（见 justfile），勿重复 cd。
