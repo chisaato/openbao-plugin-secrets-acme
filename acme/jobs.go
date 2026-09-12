@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -153,14 +154,32 @@ func (b *backend) runJob(ctx context.Context, st logical.Storage, job *jobEntry)
 			return
 		}
 	}
-	kvPath, err := b.writeCertOutput(ctx, workerReq, job.Role, role, key, entry)
+	kvPath, err := b.writeCertOutput(ctx, workerReq, job.Role, role, key, entry, kvPolicyEnforce)
 	if err != nil {
 		// 镜像同步路径不变式：KV 失败不留孤儿条目。
 		if !role.DisableCache {
 			_ = b.cacheDelete(ctx, st, key)
 		}
+		var conflict *kvConflictError
+		if errors.As(err, &conflict) {
+			fail("KV 输出冲突: %s（清理占用后重新提交，或改用 sync+force 签发）", err)
+			return
+		}
 		fail("KV 输出失败: %v", err)
 		return
+	}
+	// writeCertOutput 就地更新了 entry 的投影字段，cachePut 已在此前完成，
+	// 需在单写临界区内把三字段同步进存储条目。KV 硬失败回滚路径不走此处。
+	if !role.DisableCache && role.OutputKVMount != "" {
+		if uerr := b.cacheUpdate(ctx, st, key, func(e *cacheEntry) *cacheEntry {
+			e.OutputKVMount = entry.OutputKVMount
+			e.OutputKVPath = entry.OutputKVPath
+			e.OutputKVStatus = entry.OutputKVStatus
+			return e
+		}); uerr != nil {
+			fail("写缓存投影状态: %v", uerr)
+			return
+		}
 	}
 
 	job.Status = jobCompleted

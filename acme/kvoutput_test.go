@@ -15,6 +15,9 @@ import (
 type recordingKVWriter struct {
 	writes  []kvWrite
 	deletes []kvDelete
+	reads   []kvRead
+	// preset：mount+"/"+path → 现存数据；未命中返回 (nil, nil)。
+	preset map[string]map[string]interface{}
 }
 
 type kvWrite struct {
@@ -26,9 +29,23 @@ type kvDelete struct {
 	clientToken, mount, path string
 }
 
+type kvRead struct {
+	clientToken, mount, path string
+}
+
 func (w *recordingKVWriter) Write(ctx context.Context, clientToken, mount, path string, data map[string]interface{}) error {
 	w.writes = append(w.writes, kvWrite{clientToken, mount, path, data})
 	return nil
+}
+
+func (w *recordingKVWriter) Read(ctx context.Context, clientToken, mount, path string) (map[string]interface{}, error) {
+	w.reads = append(w.reads, kvRead{clientToken, mount, path})
+	if w.preset != nil {
+		if data, ok := w.preset[mount+"/"+path]; ok {
+			return data, nil
+		}
+	}
+	return nil, nil
 }
 
 func (w *recordingKVWriter) Delete(ctx context.Context, clientToken, mount, path string) error {
@@ -54,7 +71,7 @@ func TestWriteCertOutput(t *testing.T) {
 	// 未配置 output_kv_mount → no-op
 	path, err := b.writeCertOutput(context.Background(), &logical.Request{ClientToken: "tok"},
 		"web", &roleEntry{}, "id1",
-		&cacheEntry{CertificatePEM: "C", PrivateKeyPEM: "K"})
+		&cacheEntry{CertificatePEM: "C", PrivateKeyPEM: "K"}, kvPolicyEnforce)
 	require.NoError(t, err)
 	require.Equal(t, "", path)
 	require.Empty(t, w.writes)
@@ -67,7 +84,7 @@ func TestWriteCertOutput(t *testing.T) {
 	path, err = b.writeCertOutput(context.Background(), &logical.Request{ClientToken: "tok"},
 		"web", &roleEntry{Account: "acc1", OutputKVMount: "kv-certs"}, "mock-cert-id-123",
 		&cacheEntry{CN: "*.example.com", CertificatePEM: certPEM, PrivateKeyPEM: "K", IssuerCertificatePEM: "I",
-			Domains: []string{"*.example.com"}})
+			Domains: []string{"*.example.com"}}, kvPolicyEnforce)
 	require.NoError(t, err)
 	require.Equal(t, "certs/mock-cert-id-123", path)
 	require.Len(t, w.writes, 1)
@@ -144,6 +161,37 @@ func TestAPIKVWriterPut(t *testing.T) {
 		map[string]interface{}{"certificate": "C"})
 	require.NoError(t, err)
 	require.Equal(t, "C", capture["data"].(map[string]interface{})["certificate"])
+}
+
+func TestAPIKVWriterRead(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/kv-certs/data/certs/exists", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Vault-Token"); got != pluginEnvToken {
+			t.Errorf("应以插件 env token 身份请求: got %q", got)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"data":{"cert_id":"abc","common_name":"x.com"},"metadata":{"version":1}}}`))
+	})
+	mux.HandleFunc("/v1/kv-certs/data/certs/missing", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"errors":["not found"]}`))
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("BAO_ADDR", ts.URL)
+	t.Setenv("BAO_TOKEN", pluginEnvToken)
+
+	w := &apiKVWriter{}
+	data, err := w.Read(context.Background(), "tok", "kv-certs", "certs/exists")
+	require.NoError(t, err)
+	require.Equal(t, "abc", data["cert_id"])
+
+	// 路径不存在：KVv2.Get 返回 ErrSecretNotFound，Read 归一化为 (nil, nil)。
+	data, err = w.Read(context.Background(), "tok", "kv-certs", "certs/missing")
+	require.NoError(t, err)
+	require.Nil(t, data)
 }
 
 func TestAPIKVWriterErrorContainsMountPath(t *testing.T) {

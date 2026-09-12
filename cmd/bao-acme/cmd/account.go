@@ -150,6 +150,32 @@ func NewAccountCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(regCmd, getCmd, listCmd, deactCmd)
+	renameCmd := &cobra.Command{
+		Use:   "rename <old> <new>",
+		Short: "重命名 ACME 账户（本地改名并迁移引用）",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := GetClient()
+			if err != nil {
+				return err
+			}
+			res, err := cli.RenameAccount(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+			if FlagFormat == "json" {
+				PrintOutput(res)
+			} else {
+				fmt.Printf("账户 %q 已改名为 %q (迁移 roles=%d jobs=%d certs=%d)\n",
+					res.OldName, res.NewName, res.MigratedRoles, res.MigratedJobs, res.MigratedCerts)
+				for _, w := range res.Warnings {
+					fmt.Printf("警告: %s\n", w)
+				}
+			}
+			return nil
+		},
+	}
+
+	cmd.AddCommand(regCmd, getCmd, listCmd, deactCmd, renameCmd)
 	return cmd
 }

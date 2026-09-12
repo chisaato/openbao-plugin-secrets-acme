@@ -137,10 +137,10 @@ func decodeData(data map[string]any, target any) error {
 
 func (c *Client) RegisterAccount(ctx context.Context, name string, account api.Account) (*api.Account, error) {
 	data := map[string]any{
-		"server_url":               account.ServerURL,
-		"contact":                  account.Contact,
+		"server_url":              account.ServerURL,
+		"contact":                 account.Contact,
 		"terms_of_service_agreed": account.TOSAgreed,
-		"insecure_tls":             account.InsecureTLS,
+		"insecure_tls":            account.InsecureTLS,
 	}
 	if account.KeyType != "" {
 		data["key_type"] = account.KeyType
@@ -209,6 +209,23 @@ func (c *Client) ListAccounts(ctx context.Context) ([]string, error) {
 func (c *Client) DeactivateAccount(ctx context.Context, name string) error {
 	_, err := c.bao.Logical().DeleteWithContext(ctx, c.p("accounts/"+name))
 	return err
+}
+
+// RenameAccount 本地改名账户并级联迁移 roles/jobs/cache 引用。
+func (c *Client) RenameAccount(ctx context.Context, oldName, newName string) (*api.AccountRenameResult, error) {
+	sec, err := c.bao.Logical().WriteWithContext(ctx, c.p("accounts/"+oldName+"/rename"), map[string]any{
+		"new_name": newName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	res := &api.AccountRenameResult{}
+	if sec != nil && sec.Data != nil {
+		if err := decodeData(sec.Data, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
 }
 
 // ---- DNS Providers ----
@@ -284,6 +301,23 @@ func (c *Client) DeleteDNSProvider(ctx context.Context, name string) error {
 	return err
 }
 
+// RenameDNSProvider 本地改名 dns-provider 并级联迁移 account 引用。
+func (c *Client) RenameDNSProvider(ctx context.Context, oldName, newName string) (*api.DNSProviderRenameResult, error) {
+	sec, err := c.bao.Logical().WriteWithContext(ctx, c.p("dns-providers/"+oldName+"/rename"), map[string]any{
+		"new_name": newName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	res := &api.DNSProviderRenameResult{}
+	if sec != nil && sec.Data != nil {
+		if err := decodeData(sec.Data, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
 // ---- Roles ----
 
 func (c *Client) SetRole(ctx context.Context, name string, r api.Role) error {
@@ -347,6 +381,23 @@ func (c *Client) ListRoles(ctx context.Context) ([]string, error) {
 func (c *Client) DeleteRole(ctx context.Context, name string) error {
 	_, err := c.bao.Logical().DeleteWithContext(ctx, c.p("roles/"+name))
 	return err
+}
+
+// RenameRole 本地改名 role 并级联迁移 job/缓存条目引用（缓存键不变）。
+func (c *Client) RenameRole(ctx context.Context, oldName, newName string) (*api.RoleRenameResult, error) {
+	sec, err := c.bao.Logical().WriteWithContext(ctx, c.p("roles/"+oldName+"/rename"), map[string]any{
+		"new_name": newName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	res := &api.RoleRenameResult{}
+	if sec != nil && sec.Data != nil {
+		if err := decodeData(sec.Data, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
 }
 
 // ---- Certs & Issue ----

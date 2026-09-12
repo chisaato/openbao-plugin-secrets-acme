@@ -81,8 +81,7 @@ bin/bao-acme account register le-staging \
   --provider cf
 
 # 3. 配置 Role 策略
-bin/bao-acme role set web \
-  --account le-staging \
+bin/bao-acme role set web le-staging \
   --allowed-domains example.com \
   --allow-bare --allow-sub
 

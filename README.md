@@ -49,8 +49,7 @@ bao-acme account register prod-account \
   --provider cf-dns
 
 # 3. 配置签发角色
-bao-acme role set web \
-  --account prod-account \
+bao-acme role set web prod-account \
   --allowed-domains example.com \
   --allow-bare --allow-sub
 

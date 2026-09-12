@@ -84,6 +84,17 @@ func pathAccounts(b *backend) []*framework.Path {
 			logical.UpdateOperation: &framework.PathOperation{Callback: b.pathAccountRollover},
 		},
 	}
+	rename := &framework.Path{
+		Pattern: "accounts/" + framework.GenericNameRegex("name") + "/rename",
+		Fields: map[string]*framework.FieldSchema{
+			"name":     {Type: framework.TypeString},
+			"new_name": {Type: framework.TypeString, Required: true, Description: "新账户名。"},
+		},
+		Operations: map[logical.Operation]framework.OperationHandler{
+			logical.CreateOperation: &framework.PathOperation{Callback: b.pathAccountRename},
+			logical.UpdateOperation: &framework.PathOperation{Callback: b.pathAccountRename},
+		},
+	}
 	keyExport := &framework.Path{
 		Pattern: "accounts/" + framework.GenericNameRegex("name") + "/key",
 		Fields:  map[string]*framework.FieldSchema{"name": {Type: framework.TypeString}},
@@ -100,7 +111,7 @@ func pathAccounts(b *backend) []*framework.Path {
 			},
 		},
 	}
-	return []*framework.Path{entry, list, rollover, keyExport}
+	return []*framework.Path{entry, list, rollover, rename, keyExport}
 }
 
 func (b *backend) pathAccountWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {

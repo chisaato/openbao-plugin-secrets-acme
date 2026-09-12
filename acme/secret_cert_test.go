@@ -391,3 +391,44 @@ func TestIssueSkipsPropagationCheckViaDNSProvider(t *testing.T) {
 	require.False(t, resp != nil && resp.IsError(), "签发应成功: %v", resp)
 	require.NotEmpty(t, resp.Data["certificate"])
 }
+
+// TestRenewRoleRenamedFallback：role 改名后，存量 lease 的 InternalData["role"]
+// 仍是旧名快照——certRenew 须回退到缓存条目记录的签发 role 现名，保证仍可续期，
+// 且续期产出的新 lease 携带新 role 名。
+func TestRenewRoleRenamedFallback(t *testing.T) {
+	b, s := testBackend(t, NewFakeCredentialLoader(nil))
+	ctx := context.Background()
+
+	// 账户存在（重签取账户）；role 已是新名。
+	putAccountRaw(t, ctx, s, "le")
+	putRoleRaw(t, ctx, s, "new-r", &roleEntry{
+		Account: "le", AllowedDomains: []string{"example.com"},
+		AllowBareDomains: true, CacheForRatio: 70,
+	})
+	b.issueFn = stubIssueFn(t)
+
+	// 过期证书 + 缓存条目 Role 记录为现名 new-r。
+	const key = "renamed-role-key"
+	base := time.Now()
+	require.NoError(t, s.Put(ctx, &logical.StorageEntry{
+		Key: storageKeyCache + key,
+		Value: mustJSON(t, &cacheEntry{
+			Users: 1, Account: "le", Role: "new-r", CN: "example.com", Domains: []string{"example.com"},
+			CertificatePEM: selfSignedCertFor(t, base.Add(-100*time.Hour), base.Add(-time.Hour)),
+		}),
+	}))
+
+	req := &logical.Request{
+		Storage:     s,
+		ClientToken: "test-token",
+		Secret: &logical.Secret{InternalData: map[string]interface{}{
+			"cache_key": key,
+			"role":      "old-r", // 旧名快照，已不存在
+		}},
+	}
+	resp, err := b.certRenew(ctx, req, nil)
+	require.NoError(t, err, "改名后存量 lease 应能续期")
+	require.NotNil(t, resp)
+	require.False(t, resp.IsError())
+	require.Equal(t, "new-r", resp.Secret.InternalData["role"])
+}

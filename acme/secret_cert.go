@@ -72,6 +72,17 @@ func (b *backend) certRenew(ctx context.Context, req *logical.Request, d *framew
 	if err != nil {
 		return nil, err
 	}
+	// role 可能已被改名：InternalData["role"] 是 lease 创建时快照，
+	// 回退到缓存条目记录的签发 role 现名，保证存量 lease 改名后仍可续期。
+	if role == nil && entry.Role != "" && entry.Role != roleName {
+		if role, err = b.getRole(ctx, req.Storage, entry.Role); err != nil {
+			return nil, err
+		}
+		if role != nil {
+			// 生效的 role 名改为现名，使续期产出的新 lease InternalData 携带新名。
+			roleName = entry.Role
+		}
+	}
 	if role == nil {
 		return nil, fmt.Errorf("role %q 已删除，无法续期", roleName)
 	}
@@ -95,7 +106,7 @@ func (b *backend) certRenew(ctx context.Context, req *logical.Request, d *framew
 	executed := false
 	v, err, _ := b.issueGroup.Do(key, func() (interface{}, error) {
 		executed = true
-		return b.doIssue(ctx, req, roleName, role, account, entry.CN, entry.Domains, key, nil)
+		return b.doIssue(ctx, req, roleName, role, account, entry.CN, entry.Domains, key, nil, kvPolicyBestEffort)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("重签失败: %w", err)
@@ -165,15 +176,22 @@ func (b *backend) certRevoke(ctx context.Context, req *logical.Request, d *frame
 				}
 			}
 		}
-		// 联动清理 KV 输出（尽力而为）
-		roleName := entry.Role
-		if roleName == "" {
-			roleName, _ = req.Secret.InternalData["role"].(string)
-		}
-		if roleName != "" {
-			if role, rerr := b.getRole(ctx, req.Storage, roleName); rerr == nil && role != nil && role.OutputKVMount != "" {
-				_ = b.deleteCertOutput(ctx, req.ClientToken, role.OutputKVMount, key)
+		// 联动清理 KV 输出（尽力而为）：优先条目记录的最后成功写入位置，
+		// 为空时回退 role 现值（旧条目兼容）。
+		mount := entry.OutputKVMount
+		if mount == "" {
+			roleName := entry.Role
+			if roleName == "" {
+				roleName, _ = req.Secret.InternalData["role"].(string)
 			}
+			if roleName != "" {
+				if role, rerr := b.getRole(ctx, req.Storage, roleName); rerr == nil && role != nil {
+					mount = role.OutputKVMount
+				}
+			}
+		}
+		if mount != "" {
+			_ = b.deleteCertOutput(ctx, req.ClientToken, mount, key)
 		}
 	}
 	return nil, nil

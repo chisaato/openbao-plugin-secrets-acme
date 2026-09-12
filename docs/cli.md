@@ -8,17 +8,19 @@
 
 ```sh
 # 1. 配置 DNS Provider
+# 假设你在名为 secret 的 KV 储存下放了 dns/ali 条目
 bao-acme provider set alidns --type alidns --cred-mount secret --cred-path dns/ali
+# 虽然我觉得绝大多数人应该是在名为 dns 里存一个 cloudflare 条目,那么就使用
+bao-acme provider set cloudflare --type cloudflare --cred-mount dns --cred-path cloudflare
 
 # 2. 注册 ACME 账户
 bao-acme account register my-account \
   --server-url https://acme-v02.api.letsencrypt.org/directory \
-  --contact mailto:admin@example.com \
+  --contact admin@example.com \
   --provider alidns
 
 # 3. 制定签发 Role（支持单字段覆盖更新）
-bao-acme role set default \
-  --account my-account \
+bao-acme role set default my-account \
   --allowed-domains example.com \
   --allow-bare --allow-sub
 
@@ -37,20 +39,22 @@ bao-acme job delete <job_id>
 ## 1. 编译与环境准备
 
 ### 编译
+
 ```bash
 just build
 # 生成的二进制文件位于 bin/bao-acme
 ```
 
 ### 全局环境变量与 Flags
+
 CLI 默认会自动读取标准环境变量，无须每次输入连接参数：
 
-| 环境变量 | 命令行 Flag | 默认值 | 说明 |
-|---|---|---|---|
-| `BAO_ADDR` / `VAULT_ADDR` | `--address` | `http://127.0.0.1:8200` | OpenBao 服务监听地址 |
-| `BAO_TOKEN` / `VAULT_TOKEN` | `--token` | 空 | 访问 Token（亦可登录后保存在 `~/.vault-token`） |
-| `ACME_MOUNT` | `--mount` | `acme` | ACME 插件在 OpenBao 中的挂载路径 |
-| - | `-f, --format` | `text` | 输出格式：`text` 或 `json` |
+| 环境变量                    | 命令行 Flag    | 默认值                  | 说明                                            |
+| --------------------------- | -------------- | ----------------------- | ----------------------------------------------- |
+| `BAO_ADDR` / `VAULT_ADDR`   | `--address`    | `http://127.0.0.1:8200` | OpenBao 服务监听地址                            |
+| `BAO_TOKEN` / `VAULT_TOKEN` | `--token`      | 空                      | 访问 Token（亦可登录后保存在 `~/.vault-token`） |
+| `ACME_MOUNT`                | `--mount`      | `acme`                  | ACME 插件在 OpenBao 中的挂载路径                |
+| -                           | `-f, --format` | `text`                  | 输出格式：`text` 或 `json`                      |
 
 ---
 
@@ -61,9 +65,11 @@ CLI 默认会自动读取标准环境变量，无须每次输入连接参数：
 用于配置 DNS-01 验证所依赖的 DNS 服务商凭据引用与传播参数。
 
 #### `provider set <name>`
+
 配置或更新一个 DNS Provider。
 
 **参数列表：**
+
 - `--type` (必填)：Provider 类型。例如 `alidns`, `tencentcloud`, `cloudflare`, `exec` 等（必须是支持的白名单类型）。
 - `--cred-mount`：凭据所在的 KV mount 名称（默认 `secret`）。
 - `--cred-path` (必填)：凭据所在的 KV 相对路径。例如凭据放在 `secret/data/dns/ali`，则此处填 `dns/ali`。
@@ -88,10 +94,20 @@ bao-acme provider set my-cf \
 ```
 
 #### `provider get <name>` / `provider list` / `provider delete <name>`
+
 ```bash
 bao-acme provider list
 bao-acme provider get my-ali
 bao-acme provider delete my-ali
+```
+
+#### `provider rename <old> <new>`
+
+纯本地重命名 DNS Provider，级联更新所有 account 的 `dns_providers[].name` 引用。
+Provider 名不参与 cacheKey，缓存与 KV 输出无需迁移。
+
+```bash
+bao-acme provider rename my-cf my-cloudflare
 ```
 
 ---
@@ -101,9 +117,11 @@ bao-acme provider delete my-ali
 用于向 ACME CA 注册账户私钥，并将 DNS Provider 绑定至账户。
 
 #### `account register <name>`
+
 注册新账户并完成 ToS 同意与私钥生成。
 
 **参数列表：**
+
 - `--server-url` (必填)：ACME CA Directory URL。
   - Let's Encrypt 生产：`https://acme-v02.api.letsencrypt.org/directory`
   - Let's Encrypt 测试：`https://acme-staging-v02.api.letsencrypt.org/directory`
@@ -132,10 +150,20 @@ bao-acme account register multi-cloud \
 ```
 
 #### `account get <name>` / `account list` / `account deactivate <name>`
+
 ```bash
 bao-acme account list
 bao-acme account get le-staging
 bao-acme account deactivate le-staging
+```
+
+#### `account rename <old> <new>`
+
+纯本地重命名账户（不与 CA 交互），级联更新引用旧名的 `roles`/`jobs` 并迁移证书缓存键；
+`output_kv_mount` 的 KV 输出迁移失败时仅告警。输出提示各迁移计数，`warnings` 非空时逐行打印。
+
+```bash
+bao-acme account rename le-staging le-staging-2026
 ```
 
 ---
@@ -144,48 +172,61 @@ bao-acme account deactivate le-staging
 
 Role 用于定义签发策略（域名白名单范围、缓存寿命、是否允许泛域名覆盖复用等）。
 
-#### `role set <name>`（支持字段单独覆盖）
-创建新 Role 或**覆盖修改已有 Role 的指定字段**。未在命令行中声明的 flag 保持已有配置不变！
+#### `role set <name> <account>`（支持字段单独覆盖）
+
+创建新 Role 或**覆盖修改已有 Role 的指定字段**。`account` 为必选位置参数：创建时必填，
+更新时也会覆盖绑定；未在命令行中声明的 flag 保持已有配置不变！
 
 **参数说明与输入指引：**
 
-| 参数 | 类型 | 输入示例 | 说明 |
-|---|---|---|---|
-| `--account` | 字符串 | `le-staging` | 绑定的 ACME 账户名称（首次创建时必填） |
-| `--allowed-domains` | 字符串列表 | `example.com,test.org` | 允许签发的白名单主域名（逗号分隔） |
-| `--allow-bare` | 布尔值 | `--allow-bare` 或 `--allow-bare=false` | 是否允许签发白名单域自身（如 `example.com`） |
-| `--allow-sub` | 布尔值 | `--allow-sub` 或 `--allow-sub=false` | 是否允许签发子域或通配域（如 `app.example.com`、`*.example.com`） |
-| `--allow-any` | 布尔值 | `--allow-any` 或 `--allow-any=false` | 是否允许签发任意域名（绕过白名单校验） |
-| `--disable-cache` | 布尔值 | `--disable-cache` 或 `--disable-cache=false` | 是否完全禁用证书缓存（每次请求都强制走 ACME 真实签发） |
-| `--disable-reuse` | 布尔值 | `--disable-reuse` 或 `--disable-reuse=false` | 是否禁用同账户泛域名覆盖复用（例如已有 `*.example.com` 证书，默认会直接复用服务 `app.example.com`，设为 true 则禁止） |
-| `--cache-ratio` | 整数 (1-100) | `80` | 缓存证书有效期百分比，剩余寿命低于该值时才触发重新签发（默认 70） |
-| `--output-kv` | 字符串 | `secret` | 签发成功后是否将证书与私钥镜像写入指定 KV-v2 挂载点（留空则不写入） |
+| 参数                | 类型         | 输入示例                                     | 说明                                                                                                                  |
+| ------------------- | ------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `<account>`         | 位置参数     | `le-staging`                                 | 绑定的 ACME 账户名称（必填；更新时覆盖绑定）                                                                          |
+| `--allowed-domains` | 字符串列表   | `example.com,test.org`                       | 允许签发的白名单主域名（逗号分隔）                                                                                    |
+| `--allow-bare`      | 布尔值       | `--allow-bare` 或 `--allow-bare=false`       | 是否允许签发白名单域自身（如 `example.com`）                                                                          |
+| `--allow-sub`       | 布尔值       | `--allow-sub` 或 `--allow-sub=false`         | 是否允许签发子域或通配域（如 `app.example.com`、`*.example.com`）                                                     |
+| `--allow-any`       | 布尔值       | `--allow-any` 或 `--allow-any=false`         | 是否允许签发任意域名（绕过白名单校验）                                                                                |
+| `--disable-cache`   | 布尔值       | `--disable-cache` 或 `--disable-cache=false` | 是否完全禁用证书缓存（每次请求都强制走 ACME 真实签发）                                                                |
+| `--disable-reuse`   | 布尔值       | `--disable-reuse` 或 `--disable-reuse=false` | 是否禁用同账户泛域名覆盖复用（例如已有 `*.example.com` 证书，默认会直接复用服务 `app.example.com`，设为 true 则禁止） |
+| `--cache-ratio`     | 整数 (1-100) | `80`                                         | 缓存证书有效期百分比，剩余寿命低于该值时才触发重新签发（默认 70）                                                     |
+| `--output-kv`       | 字符串       | `secret`                                     | 签发成功后是否将证书与私钥镜像写入指定 KV-v2 挂载点（留空则不写入）                                                   |
 
 #### 针对"单独字段覆盖"的实操示例：
+
 ```bash
 # 1. 首次创建完整 Role:
-bao-acme role set web \
-  --account le-staging \
+bao-acme role set web le-staging \
   --allowed-domains example.com \
   --allow-bare --allow-sub \
   --output-kv secret
 
 # 2. 场景 A：只想单独更新白名单域名，其他所有配置（account/output-kv等）都不变：
-bao-acme role set web --allowed-domains "example.com,api.example.com,site.org"
+bao-acme role set web le-staging --allowed-domains "example.com,api.example.com,site.org"
 
 # 3. 场景 B：只想单独开启/关闭泛域名覆盖复用：
-bao-acme role set web --disable-reuse=true   # 禁用复用
-bao-acme role set web --disable-reuse=false  # 重新启用复用
+bao-acme role set web le-staging --disable-reuse=true   # 禁用复用
+bao-acme role set web le-staging --disable-reuse=false  # 重新启用复用
 
 # 4. 场景 C：只想单独调整证书续签缓存阈值：
-bao-acme role set web --cache-ratio 85
+bao-acme role set web le-staging --cache-ratio 85
 ```
 
 #### `role get <name>` / `role list` / `role delete <name>`
+
 ```bash
 bao-acme role list
 bao-acme role get web
 bao-acme role delete web
+```
+
+#### `role rename <old> <new>`
+
+纯本地重命名 Role。cacheKey 不含 role 名，故缓存键与 KV 输出路径不变，仅更新引用——
+`jobs` 的 `role` 字段与缓存条目的 `role` 字段（原键原位覆写）。存量 lease 的旧 role 名快照
+在续期时会自动回退到缓存条目记录的现名。
+
+```bash
+bao-acme role rename web web-prod
 ```
 
 ---
@@ -195,15 +236,17 @@ bao-acme role delete web
 `cert` 命令提供对证书资产的完整生命周期管理（申请、检索、详情查看、主动续签与撤销删除）。
 
 #### 常用命令概览：
-| 命令 | 说明 |
-|---|---|
-| `cert list [--role <role>]` | 列出已签发或已缓存的证书（支持指定 Role 过滤） |
-| `cert get <role> <cn>` | 查看指定证书详情（可直接将公私钥导出至文件） |
+
+| 命令                          | 说明                                                     |
+| ----------------------------- | -------------------------------------------------------- |
+| `cert list [--role <role>]`   | 列出已签发或已缓存的证书（支持指定 Role 过滤）           |
+| `cert get <role> <cn>`        | 查看指定证书详情（可直接将公私钥导出至文件）             |
 | `cert issue <role> --cn <cn>` | 申请签发新证书（默认异步轮询等待，支持直接导出本地文件） |
-| `cert renew <role> <cn>` | 主动触发已有证书的续签 |
-| `cert revoke <role> <cn>` | 撤销证书并从集群缓存和存储中清理 |
+| `cert renew <role> <cn>`      | 主动触发已有证书的续签                                   |
+| `cert revoke <role> <cn>`     | 撤销证书并从集群缓存和存储中清理                         |
 
 #### 1. 列出证书 (`cert list`)
+
 ```bash
 # 列出系统内所有证书 (表格展示 12 位短 ID, 主域名, 全部 SAN 域名, Role, 到期时间与状态)
 bao-acme cert list
@@ -217,7 +260,9 @@ bao-acme cert list --role web
 ```
 
 #### 2. 查看与导出证书 (`cert get`)
+
 支持直接通过 **12 位短 ID** (类似 Docker 短容器 ID 前缀匹配，无二义性) 精准取回特定证书实体，或兼容通过 `<role> <cn>`：
+
 ```bash
 # 通过 Cert 短 ID 精确查看（推荐，可直接从 cert list 复制 12 位 ID）
 bao-acme cert get 86c1467f25e9
@@ -230,6 +275,7 @@ bao-acme cert get 86c1467f25e9 --out-cert /etc/ssl/cert.pem --out-key /etc/ssl/k
 ```
 
 #### 3. 申请签发证书 (`cert issue`)
+
 发起证书签发。**默认行为：提交异步任务，并在终端输出轮询进度，完成后输出成功卡片。若指定了 `--out-cert` / `--out-key` 则自动保存到本地文件。**
 
 支持类似 `acme.sh` 的 `-d / --domain` 多域名语法（可重复传入或逗号分隔，首个域名为主域名 CN，后续为 SAN 扩展域名），也可以继续使用 `--cn` 和 `--alt`。
@@ -244,7 +290,8 @@ bao-acme cert issue web -d example.com -d "*.example.com" \
 bao-acme cert issue web -d app.example.com
 # 终端提示：检测到已有证书覆盖，展示匹配的现有证书列表（含短 ID），无需重复申请
 
-# 示例 3：强制签发新证书 (--force)，跳过本地精确缓存与泛域名覆盖复用
+# 示例 3：强制签发新证书 (--force)，跳过本地精确缓存与泛域名覆盖复用，
+# 同时跳过 KV 输出目标路径的占用冲突检查（会直接覆盖占用者数据）
 bao-acme cert issue web -d example.com -d "*.example.com" --force
 
 # 示例 4：单次签发覆盖 DNS-01 预检（指定 223.5.5.5 上游 DNS，或跳过本地预检）
@@ -262,7 +309,9 @@ echo "后台任务 ID: $JOB_ID"
 > 插件内置了针对 Cloudflare（如 `81058: An identical record already exists`）以及各大主流 DNS 服务商的幂等容错包装。若由于前次任务异常中断导致 DNS 记录已存在，当前任务的 Present 阶段会自动将其识别为成功并继续执行，避免报 400 失败。
 
 #### 4. 主动触发续签 (`cert renew`)
+
 当需要强制向 CA 重新签发证书（即便未到达 `cache-ratio` 阈值）时使用：
+
 ```bash
 # 提交续签任务（默认异步）
 bao-acme cert renew web example.com
@@ -272,7 +321,9 @@ bao-acme cert renew web example.com --sync
 ```
 
 #### 5. 撤销证书并清理 (`cert revoke`)
+
 立即向 ACME CA 发送 Revoke 请求撤销证书，并从 OpenBao 存储与本地缓存中彻底清理条目：
+
 ```bash
 bao-acme cert revoke web example.com
 ```
@@ -284,6 +335,7 @@ bao-acme cert revoke web example.com
 当使用 `--no-wait` 或在服务重启后排查任务状态时使用。
 
 #### 常用命令：
+
 ```bash
 # 列出所有任务 (表格对齐展示状态、域名、相对时间 Age 与错误摘要)
 bao-acme job list

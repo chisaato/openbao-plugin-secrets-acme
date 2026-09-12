@@ -4,6 +4,13 @@ import (
 	"time"
 )
 
+// KV 投影状态（CacheEntry.OutputKVStatus）。
+const (
+	KVStatusWritten         = "written"
+	KVStatusSkippedConflict = "skipped_conflict"
+	KVStatusSkippedError    = "skipped_error"
+)
+
 // DNSProvider 是 dns-providers/{name} 的配置与响应实体。
 type DNSProvider struct {
 	Type                 string          `json:"type" mapstructure:"type"`
@@ -27,6 +34,31 @@ type Account struct {
 	InsecureTLS      bool             `json:"insecure_tls" mapstructure:"insecure_tls"`
 	DNSProviders     []DNSProviderRef `json:"dns_providers" mapstructure:"dns_providers"`
 	Status           string           `json:"status,omitempty" mapstructure:"status"`
+}
+
+// AccountRenameResult 是 accounts/{name}/rename 的响应实体。
+type AccountRenameResult struct {
+	OldName       string   `json:"old_name" mapstructure:"old_name"`
+	NewName       string   `json:"new_name" mapstructure:"new_name"`
+	MigratedRoles int      `json:"migrated_roles" mapstructure:"migrated_roles"`
+	MigratedJobs  int      `json:"migrated_jobs" mapstructure:"migrated_jobs"`
+	MigratedCerts int      `json:"migrated_certs" mapstructure:"migrated_certs"`
+	Warnings      []string `json:"warnings,omitempty" mapstructure:"warnings"`
+}
+
+// RoleRenameResult 是 roles/{name}/rename 的响应实体。
+type RoleRenameResult struct {
+	OldName       string `json:"old_name" mapstructure:"old_name"`
+	NewName       string `json:"new_name" mapstructure:"new_name"`
+	MigratedJobs  int    `json:"migrated_jobs" mapstructure:"migrated_jobs"`
+	MigratedCerts int    `json:"migrated_certs" mapstructure:"migrated_certs"`
+}
+
+// DNSProviderRenameResult 是 dns-providers/{name}/rename 的响应实体。
+type DNSProviderRenameResult struct {
+	OldName          string `json:"old_name" mapstructure:"old_name"`
+	NewName          string `json:"new_name" mapstructure:"new_name"`
+	MigratedAccounts int    `json:"migrated_accounts" mapstructure:"migrated_accounts"`
 }
 
 // Role 是 roles/{name} 的配置与响应实体。
@@ -73,6 +105,7 @@ type IssueResponse struct {
 	NotBefore      string `json:"not_before,omitempty" mapstructure:"not_before"`
 	NotAfter       string `json:"not_after,omitempty" mapstructure:"not_after"`
 	OutputPath     string `json:"output_path,omitempty" mapstructure:"output_path"`
+	OutputKVStatus string `json:"output_kv_status,omitempty" mapstructure:"output_kv_status"`
 	Reused         bool   `json:"reused,omitempty" mapstructure:"reused"`
 	Status         string `json:"status,omitempty" mapstructure:"status"`
 	Error          string `json:"error,omitempty" mapstructure:"error"`
@@ -137,15 +170,17 @@ func (j *JobDetail) GetCertSnapshot() *JobCertSnapshot {
 
 // CertSummary 是 LIST certs/ 返回的证书摘要。
 type CertSummary struct {
-	ID         string   `json:"id,omitempty" mapstructure:"id"`
-	CertID     string   `json:"cert_id,omitempty" mapstructure:"cert_id"`
-	CacheKey   string   `json:"cache_key" mapstructure:"cache_key"`
-	CommonName string   `json:"common_name" mapstructure:"common_name"`
-	Domains    []string `json:"domains" mapstructure:"domains"`
-	Role       string   `json:"role" mapstructure:"role"`
-	Account    string   `json:"account" mapstructure:"account"`
-	NotBefore  string   `json:"not_before,omitempty" mapstructure:"not_before"`
-	NotAfter   string   `json:"not_after,omitempty" mapstructure:"not_after"`
+	ID             string   `json:"id,omitempty" mapstructure:"id"`
+	CertID         string   `json:"cert_id,omitempty" mapstructure:"cert_id"`
+	CacheKey       string   `json:"cache_key" mapstructure:"cache_key"`
+	CommonName     string   `json:"common_name" mapstructure:"common_name"`
+	Domains        []string `json:"domains" mapstructure:"domains"`
+	Role           string   `json:"role" mapstructure:"role"`
+	Account        string   `json:"account" mapstructure:"account"`
+	OutputKVStatus string   `json:"output_kv_status,omitempty" mapstructure:"output_kv_status"`
+	OutputKVPath   string   `json:"output_kv_path,omitempty" mapstructure:"output_kv_path"`
+	NotBefore      string   `json:"not_before,omitempty" mapstructure:"not_before"`
+	NotAfter       string   `json:"not_after,omitempty" mapstructure:"not_after"`
 }
 
 // ShortID 返回前 12 位的短 ID (类似 Docker 容器短 ID)。
@@ -186,6 +221,9 @@ type CertDetail struct {
 	IssuerCertPEM  string   `json:"issuer_cert" mapstructure:"issuer_cert"`
 	CertURL        string   `json:"url" mapstructure:"url"`
 	CertStableURL  string   `json:"cert_stable_url" mapstructure:"cert_stable_url"`
+	OutputKVMount  string   `json:"output_kv_mount,omitempty" mapstructure:"output_kv_mount"`
+	OutputKVStatus string   `json:"output_kv_status,omitempty" mapstructure:"output_kv_status"`
+	OutputKVPath   string   `json:"output_kv_path,omitempty" mapstructure:"output_kv_path"`
 	NotBefore      string   `json:"not_before,omitempty" mapstructure:"not_before"`
 	NotAfter       string   `json:"not_after,omitempty" mapstructure:"not_after"`
 	NeedsRenewal   bool     `json:"needs_renewal" mapstructure:"needs_renewal"`
@@ -222,4 +260,3 @@ type PrunedJobSummary struct {
 	UpdatedAt string    `json:"updated_at"`
 	Error     string    `json:"error,omitempty"`
 }
-

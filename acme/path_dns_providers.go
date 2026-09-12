@@ -117,7 +117,18 @@ func pathDNSProviders(b *backend) []*framework.Path {
 			logical.ListOperation: &framework.PathOperation{Callback: b.pathDNSProviderList},
 		},
 	}
-	return []*framework.Path{write, list}
+	rename := &framework.Path{
+		Pattern: "dns-providers/" + framework.GenericNameRegex("name") + "/rename",
+		Fields: map[string]*framework.FieldSchema{
+			"name":     {Type: framework.TypeString},
+			"new_name": {Type: framework.TypeString, Required: true, Description: "新 DNS provider 名。"},
+		},
+		Operations: map[logical.Operation]framework.OperationHandler{
+			logical.CreateOperation: &framework.PathOperation{Callback: b.pathDNSProviderRename},
+			logical.UpdateOperation: &framework.PathOperation{Callback: b.pathDNSProviderRename},
+		},
+	}
+	return []*framework.Path{write, list, rename}
 }
 
 func (b *backend) pathDNSProviderWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {

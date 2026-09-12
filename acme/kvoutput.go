@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	pluginapi "github.com/chisaato/openbao-plugin-secrets-acme/pkg/api"
 	"github.com/openbao/openbao/api/v2"
 	"github.com/openbao/openbao/sdk/v2/logical"
 )
@@ -15,7 +17,33 @@ import (
 // KVOutputWriter 把签发结果同步写入 KV engine。
 type KVOutputWriter interface {
 	Write(ctx context.Context, clientToken, mount, path string, data map[string]interface{}) error
+	// Read 读取路径现存数据；路径不存在返回 (nil, nil)。
+	Read(ctx context.Context, clientToken, mount, path string) (map[string]interface{}, error)
 	Delete(ctx context.Context, clientToken, mount, path string) error
+}
+
+// kvConflictError：KV 目标路径被非本次证书的数据占用。
+type kvConflictError struct{ Path, Detail string }
+
+func (e *kvConflictError) Error() string {
+	return fmt.Sprintf("KV 路径 %s 被占用: %s", e.Path, e.Detail)
+}
+
+// kvWritePolicy 控制 writeCertOutput 在目标路径被占用时的行为。
+type kvWritePolicy int
+
+const (
+	kvPolicyEnforce    kvWritePolicy = iota // 冲突返回 *kvConflictError
+	kvPolicyOverwrite                       // force：跳过检查直接写
+	kvPolicyBestEffort                      // 冲突跳过写并记 warn 日志，返回 ("", nil)
+)
+
+// kvMetaOrDash：占用详情字段取字符串，缺失/空值显示 "-"。
+func kvMetaOrDash(v interface{}) string {
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return "-"
 }
 
 // apiKVWriter 用插件进程自身的 api client 写 KVv2。地址与 token 来自插件
@@ -48,6 +76,27 @@ func (a *apiKVWriter) Delete(ctx context.Context, clientToken, mount, path strin
 		return fmt.Errorf("delete kv2 metadata %s/%s: %w", mount, path, err)
 	}
 	return nil
+}
+
+func (a *apiKVWriter) Read(ctx context.Context, clientToken, mount, path string) (map[string]interface{}, error) {
+	// clientToken 是哈希值，仅保留在接口签名中以兼容 Fake 实现。
+	_ = clientToken
+	client, err := api.NewClient(nil)
+	if err != nil {
+		return nil, fmt.Errorf("create openbao client: %w", err)
+	}
+	secret, err := client.KVv2(mount).Get(ctx, path)
+	if err != nil {
+		// 路径不存在：KVv2.Get 包装 ErrSecretNotFound；据此视为空路径。
+		if errors.Is(err, api.ErrSecretNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read kv2 %s/%s: %w", mount, path, err)
+	}
+	if secret == nil {
+		return nil, nil
+	}
+	return secret.Data, nil
 }
 
 // sanitizeCN 把 CN 变成 KV 路径安全的段：*. 前缀 → _wildcard.，/ → _。
@@ -86,11 +135,49 @@ func buildFullChain(certPEM, issuerPEM string) string {
 }
 
 // writeCertOutput：未配置 OutputKVMount 时 no-op；否则写证书并返回写入的 KV path。
-func (b *backend) writeCertOutput(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, certID string, entry *cacheEntry) (string, error) {
+//
+// 投影/冲突语义：KV 是投影、ACME 是事实源。写入前按 policy 检查目标路径占用——
+// 空路径、或现存数据 cert_id 与本次一致（自己的旧版本）允许写；被其他证书或
+// 外来数据占用时按 policy 拒绝/跳过。
+//
+// 本函数会就地更新 entry 的投影字段（OutputKVMount/OutputKVPath/OutputKVStatus），
+// 调用方负责持久化（cacheUpdate）。BestEffort 跳过时 Mount/Path 保持上次成功值——
+// 它们是"最后成功写入位置"，撤销清理语义依赖 Mount。
+func (b *backend) writeCertOutput(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, certID string, entry *cacheEntry, policy kvWritePolicy) (string, error) {
 	if role.OutputKVMount == "" {
 		return "", nil
 	}
 	path := outputKVPath(certID)
+	if policy != kvPolicyOverwrite {
+		existing, err := b.kvWriter.Read(ctx, req.ClientToken, role.OutputKVMount, path)
+		if err != nil {
+			// 读取失败无法判定占用：Enforce 保守拒绝，BestEffort 跳过写继续。
+			if policy == kvPolicyBestEffort {
+				// 跳过不更新 Mount/Path：保持上次成功写入位置（撤销清理依赖）。
+				entry.OutputKVStatus = pluginapi.KVStatusSkippedError
+				b.Logger().Warn("KV 输出跳过：占用检查失败", "path", path, "error", err)
+				return "", nil
+			}
+			return "", fmt.Errorf("KV 占用检查失败: %w", err)
+		}
+		if existing != nil {
+			if otherID, _ := existing["cert_id"].(string); otherID != certID {
+				detail := "路径存在非本引擎写入的数据"
+				if otherID != "" {
+					detail = fmt.Sprintf("已被证书 cert_id=%s (common_name=%s, role=%s, account=%s) 占用",
+						otherID, kvMetaOrDash(existing["common_name"]), kvMetaOrDash(existing["role"]), kvMetaOrDash(existing["account"]))
+				}
+				conflict := &kvConflictError{Path: path, Detail: detail}
+				if policy == kvPolicyBestEffort {
+					// 跳过不更新 Mount/Path：保持上次成功写入位置。
+					entry.OutputKVStatus = pluginapi.KVStatusSkippedConflict
+					b.Logger().Warn("KV 输出跳过：目标路径被占用", "path", path, "detail", detail)
+					return "", nil
+				}
+				return "", conflict
+			}
+		}
+	}
 	fullchain := buildFullChain(entry.CertificatePEM, entry.IssuerCertificatePEM)
 
 	data := map[string]interface{}{
@@ -126,6 +213,10 @@ func (b *backend) writeCertOutput(ctx context.Context, req *logical.Request, rol
 	if err := b.kvWriter.Write(ctx, req.ClientToken, role.OutputKVMount, path, data); err != nil {
 		return "", err
 	}
+	entry.OutputKVStatus = pluginapi.KVStatusWritten
+	entry.OutputKVMount = role.OutputKVMount
+	// 记录完整输出路径：mount + "/" + certs/{certID}（certID 即本次 path 的末段）。
+	entry.OutputKVPath = role.OutputKVMount + "/" + path
 	return path, nil
 }
 

@@ -29,12 +29,12 @@ func TestCLIRolePartialUpdate(t *testing.T) {
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
-	// 仅覆盖 disable-reuse 和 cache-ratio 两个字段
+	// 仅覆盖 disable-reuse 和 cache-ratio 两个字段（account 为位置参数）
 	cmd.SetArgs([]string{
 		"--address", srv.URL,
 		"--token", "test-token",
 		"--mount", "acme",
-		"role", "set", "web",
+		"role", "set", "web", "le",
 		"--disable-reuse=true",
 		"--cache-ratio", "50",
 	})
@@ -42,10 +42,11 @@ func TestCLIRolePartialUpdate(t *testing.T) {
 	err := cmd.ExecuteContext(context.Background())
 	require.NoError(t, err)
 
-	// 验证发往 openbao 的 payload 只包含显式传的 flag，未传的字段绝对不出现
+	// 验证发往 openbao 的 payload 只包含显式传的 flag + 位置参数 account
 	assert.Equal(t, true, receivedBody["disable_cert_reuse"])
 	assert.Equal(t, float64(50), receivedBody["cache_for_ratio"])
-	assert.NotContains(t, receivedBody, "account")
+	// account 为位置参数，始终随请求发送
+	assert.Equal(t, "le", receivedBody["account"])
 	assert.NotContains(t, receivedBody, "allowed_domains")
 	assert.NotContains(t, receivedBody, "allow_bare_domains")
 	assert.NotContains(t, receivedBody, "allow_subdomains")

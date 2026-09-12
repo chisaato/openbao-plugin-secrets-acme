@@ -214,7 +214,7 @@ func NewCertCmd() *cobra.Command {
 			}
 
 			tw := newTabWriter(cmd.OutOrStdout())
-			fmt.Fprintln(tw, "CERT ID\tCOMMON NAME\tDOMAINS\tROLE\tEXPIRES\tSTATUS")
+			fmt.Fprintln(tw, "CERT ID\tCOMMON NAME\tDOMAINS\tROLE\tEXPIRES\tSTATUS\tKV")
 			for _, c := range certs {
 				rem := formatRemaining(c.NotAfter)
 				status := "Active"
@@ -235,8 +235,12 @@ func NewCertCmd() *cobra.Command {
 				doms = truncateString(doms, 35)
 				// 类似 Docker 显示 12 位 short ID，不带省略号，便于终端双击复制
 				certID := c.GetShortID()
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					certID, c.CommonName, doms, c.Role, rem, status)
+				kvStatus := c.OutputKVStatus
+				if kvStatus == "" {
+					kvStatus = "-"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					certID, c.CommonName, doms, c.Role, rem, status, kvStatus)
 			}
 			_ = tw.Flush()
 			return nil
@@ -290,6 +294,19 @@ func NewCertCmd() *cobra.Command {
 			fmt.Fprintf(out, "Not Before:     %s\n", detail.NotBefore)
 			fmt.Fprintf(out, "Not After:      %s\n", detail.NotAfter)
 			fmt.Fprintf(out, "Needs Renewal:  %v\n", detail.NeedsRenewal)
+			kvStatus := detail.OutputKVStatus
+			if kvStatus == "" {
+				kvStatus = "-"
+			}
+			kvMount := detail.OutputKVMount
+			if kvMount == "" {
+				kvMount = "-"
+			}
+			fmt.Fprintf(out, "KV Mount:       %s\n", kvMount)
+			fmt.Fprintf(out, "KV Status:      %s\n", kvStatus)
+			if detail.OutputKVPath != "" {
+				fmt.Fprintf(out, "KV Path:        %s\n", detail.OutputKVPath)
+			}
 			fmt.Fprintf(out, "\n--- CERTIFICATE ---\n%s", detail.CertificatePEM)
 			return nil
 		},

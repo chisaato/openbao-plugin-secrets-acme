@@ -14,7 +14,6 @@ func NewRoleCmd() *cobra.Command {
 	}
 
 	var (
-		account          string
 		allowedDomains   []string
 		allowBare        bool
 		allowSub         bool
@@ -26,9 +25,9 @@ func NewRoleCmd() *cobra.Command {
 	)
 
 	setCmd := &cobra.Command{
-		Use:   "set <name>",
-		Short: "创建或覆盖更新 Role (仅传递被指定的 flag，未指定的保留旧值)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "set <name> <account>",
+		Short: "创建或覆盖更新 Role（account 为必选位置参数，更新时也会覆盖绑定）",
+		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cli, err := GetClient()
@@ -38,9 +37,8 @@ func NewRoleCmd() *cobra.Command {
 
 			// 收集用户在命令行实际传递改变的 flag
 			fields := make(map[string]any)
-			if cmd.Flags().Changed("account") {
-				fields["account"] = account
-			}
+			// account 为必选位置参数：创建必填，更新时即显式改绑。
+			fields["account"] = args[1]
 			if cmd.Flags().Changed("allowed-domains") {
 				fields["allowed_domains"] = allowedDomains
 			}
@@ -77,7 +75,6 @@ func NewRoleCmd() *cobra.Command {
 			return nil
 		},
 	}
-	setCmd.Flags().StringVar(&account, "account", "", "关联的 ACME 账户名 (首次创建时必填)")
 	setCmd.Flags().StringSliceVar(&allowedDomains, "allowed-domains", nil, "白名单根域名 (逗号分隔)")
 	setCmd.Flags().BoolVar(&allowBare, "allow-bare", false, "允许白名单裸域 (--allow-bare / --allow-bare=false)")
 	setCmd.Flags().BoolVar(&allowSub, "allow-sub", false, "允许白名单子域 (--allow-sub / --allow-sub=false)")
@@ -167,6 +164,29 @@ func NewRoleCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(setCmd, getCmd, listCmd, delCmd)
+	renameCmd := &cobra.Command{
+		Use:   "rename <old> <new>",
+		Short: "重命名 Role（本地改名并迁移 job/缓存引用）",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := GetClient()
+			if err != nil {
+				return err
+			}
+			res, err := cli.RenameRole(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+			if FlagFormat == "json" {
+				PrintOutput(res)
+			} else {
+				fmt.Printf("Role %q 已改名为 %q (迁移 jobs=%d certs=%d)\n",
+					res.OldName, res.NewName, res.MigratedJobs, res.MigratedCerts)
+			}
+			return nil
+		},
+	}
+
+	cmd.AddCommand(setCmd, getCmd, listCmd, delCmd, renameCmd)
 	return cmd
 }

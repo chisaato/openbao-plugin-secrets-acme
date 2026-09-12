@@ -347,6 +347,10 @@ func (w *failingKVWriter) Write(ctx context.Context, clientToken, mount, path st
 	return w.err
 }
 
+func (w *failingKVWriter) Read(ctx context.Context, clientToken, mount, path string) (map[string]interface{}, error) {
+	return nil, w.err
+}
+
 func (w *failingKVWriter) Delete(ctx context.Context, clientToken, mount, path string) error {
 	return w.err
 }

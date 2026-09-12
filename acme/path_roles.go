@@ -124,7 +124,18 @@ func pathRoles(b *backend) []*framework.Path {
 			},
 		},
 	}
-	return []*framework.Path{entry, list}
+	rename := &framework.Path{
+		Pattern: "roles/" + framework.GenericNameRegex("name") + "/rename",
+		Fields: map[string]*framework.FieldSchema{
+			"name":     {Type: framework.TypeString},
+			"new_name": {Type: framework.TypeString, Required: true, Description: "新 role 名。"},
+		},
+		Operations: map[logical.Operation]framework.OperationHandler{
+			logical.CreateOperation: &framework.PathOperation{Callback: b.pathRoleRename},
+			logical.UpdateOperation: &framework.PathOperation{Callback: b.pathRoleRename},
+		},
+	}
+	return []*framework.Path{entry, list, rename}
 }
 
 func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {

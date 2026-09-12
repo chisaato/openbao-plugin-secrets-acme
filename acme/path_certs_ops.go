@@ -102,15 +102,58 @@ func pathCertsExtended(b *backend) []*framework.Path {
 
 // certSummary 表示 LIST 时的摘要条目
 type certSummary struct {
-	ID         string   `json:"id"`
-	CertID     string   `json:"cert_id"`
-	CacheKey   string   `json:"cache_key"`
-	CommonName string   `json:"common_name"`
-	Domains    []string `json:"domains"`
-	Role       string   `json:"role"`
-	Account    string   `json:"account"`
-	NotBefore  string   `json:"not_before,omitempty"`
-	NotAfter   string   `json:"not_after,omitempty"`
+	ID             string   `json:"id"`
+	CertID         string   `json:"cert_id"`
+	CacheKey       string   `json:"cache_key"`
+	CommonName     string   `json:"common_name"`
+	Domains        []string `json:"domains"`
+	Role           string   `json:"role"`
+	Account        string   `json:"account"`
+	OutputKVStatus string   `json:"output_kv_status,omitempty"`
+	OutputKVPath   string   `json:"output_kv_path,omitempty"`
+	NotBefore      string   `json:"not_before,omitempty"`
+	NotAfter       string   `json:"not_after,omitempty"`
+}
+
+// resolveOutputKVPath：展示用完整 KV 路径。条目记录的 OutputKVPath 优先；旧条目
+// 未记录但 Mount 非空时现场回退拼接 mount + certs/{certID}；均无则空串（不展示）。
+func resolveOutputKVPath(entry *cacheEntry, certID string) string {
+	if entry.OutputKVPath != "" {
+		return entry.OutputKVPath
+	}
+	if entry.OutputKVMount != "" {
+		return entry.OutputKVMount + "/" + outputKVPath(certID)
+	}
+	return ""
+}
+
+// outputKVFields 组装 KV 投影展示字段：mount/path 仅在记录 mount 非空时输出，
+// status 恒输出（可能为空串）。
+func outputKVFields(entry *cacheEntry, certID string) map[string]any {
+	fields := map[string]any{"output_kv_status": entry.OutputKVStatus}
+	if entry.OutputKVMount != "" {
+		fields["output_kv_mount"] = entry.OutputKVMount
+	}
+	if path := resolveOutputKVPath(entry, certID); path != "" {
+		fields["output_kv_path"] = path
+	}
+	return fields
+}
+
+// resolveOutputKVMount：撤销清理的 mount 优先条目记录的最后成功写入位置，
+// 为空时回退 role 现值（旧条目/兼容行为）。
+func (b *backend) resolveOutputKVMount(ctx context.Context, s logical.Storage, entry *cacheEntry) string {
+	if entry.OutputKVMount != "" {
+		return entry.OutputKVMount
+	}
+	if entry.Role == "" {
+		return ""
+	}
+	role, err := b.getRole(ctx, s, entry.Role)
+	if err != nil || role == nil {
+		return ""
+	}
+	return role.OutputKVMount
 }
 
 func (b *backend) pathCertListAll(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
@@ -128,15 +171,17 @@ func (b *backend) pathCertListAll(ctx context.Context, req *logical.Request, d *
 		}
 		nb, na := parseCertDates(entry.CertificatePEM)
 		results = append(results, certSummary{
-			ID:         k,
-			CertID:     k,
-			CacheKey:   k,
-			CommonName: entry.CN,
-			Domains:    entry.Domains,
-			Role:       entry.Role,
-			Account:    entry.Account,
-			NotBefore:  nb,
-			NotAfter:   na,
+			ID:             k,
+			CertID:         k,
+			CacheKey:       k,
+			CommonName:     entry.CN,
+			Domains:        entry.Domains,
+			Role:           entry.Role,
+			Account:        entry.Account,
+			OutputKVStatus: entry.OutputKVStatus,
+			OutputKVPath:   resolveOutputKVPath(entry, k),
+			NotBefore:      nb,
+			NotAfter:       na,
 		})
 		cnList = append(cnList, entry.CN)
 	}
@@ -168,15 +213,17 @@ func (b *backend) pathCertListByRole(ctx context.Context, req *logical.Request, 
 		}
 		nb, na := parseCertDates(entry.CertificatePEM)
 		results = append(results, certSummary{
-			ID:         k,
-			CertID:     k,
-			CacheKey:   k,
-			CommonName: entry.CN,
-			Domains:    entry.Domains,
-			Role:       entry.Role,
-			Account:    entry.Account,
-			NotBefore:  nb,
-			NotAfter:   na,
+			ID:             k,
+			CertID:         k,
+			CacheKey:       k,
+			CommonName:     entry.CN,
+			Domains:        entry.Domains,
+			Role:           entry.Role,
+			Account:        entry.Account,
+			OutputKVStatus: entry.OutputKVStatus,
+			OutputKVPath:   resolveOutputKVPath(entry, k),
+			NotBefore:      nb,
+			NotAfter:       na,
 		})
 		cnList = append(cnList, entry.CN)
 	}
@@ -227,34 +274,36 @@ func (b *backend) pathCertGet(ctx context.Context, req *logical.Request, d *fram
 		needsRenew = certNeedsRenewal(entry.CertificatePEM, role.CacheForRatio)
 	}
 
-	return &logical.Response{
-		Data: map[string]any{
-			"id":               key,
-			"cert_id":          key,
-			"common_name":      entry.CN,
-			"domains":          entry.Domains,
-			"role":             entry.Role,
-			"account":          entry.Account,
-			"certificate":      entry.CertificatePEM,
-			"private_key":      entry.PrivateKeyPEM,
-			"issuer_cert":      entry.IssuerCertificatePEM,
-			"url":              entry.CertURL,
-			"cert_stable_url":  entry.CertStableURL,
-			"not_before":       nb,
-			"not_after":        na,
-			"needs_renewal":    needsRenew,
-			"cache_key":        key,
-		},
-	}, nil
+	data := map[string]any{
+		"id":              key,
+		"cert_id":         key,
+		"common_name":     entry.CN,
+		"domains":         entry.Domains,
+		"role":            entry.Role,
+		"account":         entry.Account,
+		"certificate":     entry.CertificatePEM,
+		"private_key":     entry.PrivateKeyPEM,
+		"issuer_cert":     entry.IssuerCertificatePEM,
+		"url":             entry.CertURL,
+		"cert_stable_url": entry.CertStableURL,
+		"not_before":      nb,
+		"not_after":       na,
+		"needs_renewal":   needsRenew,
+		"cache_key":       key,
+	}
+	for k, v := range outputKVFields(entry, key) {
+		data[k] = v
+	}
+	return &logical.Response{Data: data}, nil
 }
 
 // resolveCertByID 通过全量 ID 或前缀查找证书条目。
 // 规则：
 // 1. 若精确命中，直接返回；
 // 2. 若前缀匹配（长度 >= 4）：
-//    - 命中唯 1 个则返回；
-//    - 命中 > 1 个返回歧义错误；
-//    - 未命中返回 nil, "", nil (404)。
+//   - 命中唯 1 个则返回；
+//   - 命中 > 1 个返回歧义错误；
+//   - 未命中返回 nil, "", nil (404)。
 func (b *backend) resolveCertByID(ctx context.Context, s logical.Storage, queryID string) (*cacheEntry, string, error) {
 	queryID = strings.TrimSpace(queryID)
 	if queryID == "" {
@@ -319,25 +368,27 @@ func (b *backend) pathCertGetByID(ctx context.Context, req *logical.Request, d *
 		needsRenew = certNeedsRenewal(entry.CertificatePEM, role.CacheForRatio)
 	}
 
-	return &logical.Response{
-		Data: map[string]any{
-			"id":               certID,
-			"cert_id":          certID,
-			"common_name":      entry.CN,
-			"domains":          entry.Domains,
-			"role":             entry.Role,
-			"account":          entry.Account,
-			"certificate":      entry.CertificatePEM,
-			"private_key":      entry.PrivateKeyPEM,
-			"issuer_cert":      entry.IssuerCertificatePEM,
-			"url":              entry.CertURL,
-			"cert_stable_url":  entry.CertStableURL,
-			"not_before":       nb,
-			"not_after":        na,
-			"needs_renewal":    needsRenew,
-			"cache_key":        certID,
-		},
-	}, nil
+	data := map[string]any{
+		"id":              certID,
+		"cert_id":         certID,
+		"common_name":     entry.CN,
+		"domains":         entry.Domains,
+		"role":            entry.Role,
+		"account":         entry.Account,
+		"certificate":     entry.CertificatePEM,
+		"private_key":     entry.PrivateKeyPEM,
+		"issuer_cert":     entry.IssuerCertificatePEM,
+		"url":             entry.CertURL,
+		"cert_stable_url": entry.CertStableURL,
+		"not_before":      nb,
+		"not_after":       na,
+		"needs_renewal":   needsRenew,
+		"cache_key":       certID,
+	}
+	for k, v := range outputKVFields(entry, certID) {
+		data[k] = v
+	}
+	return &logical.Response{Data: data}, nil
 }
 
 func (b *backend) pathCertRevokeByID(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
@@ -364,11 +415,9 @@ func (b *backend) pathCertRevokeByID(ctx context.Context, req *logical.Request, 
 		return nil, err
 	}
 
-	// 3. 联动清理 KV 证书输出（尽力而为）
-	if entry.Role != "" {
-		if role, rerr := b.getRole(ctx, req.Storage, entry.Role); rerr == nil && role != nil && role.OutputKVMount != "" {
-			_ = b.deleteCertOutput(ctx, req.ClientToken, role.OutputKVMount, certID)
-		}
+	// 3. 联动清理 KV 证书输出（尽力而为）：优先条目记录的最后成功写入位置。
+	if mount := b.resolveOutputKVMount(ctx, req.Storage, entry); mount != "" {
+		_ = b.deleteCertOutput(ctx, req.ClientToken, mount, certID)
 	}
 
 	return &logical.Response{
@@ -407,11 +456,9 @@ func (b *backend) pathCertRevoke(ctx context.Context, req *logical.Request, d *f
 		return nil, err
 	}
 
-	// 3. 联动清理 KV 证书输出（尽力而为）
-	if entry.Role != "" {
-		if role, rerr := b.getRole(ctx, req.Storage, entry.Role); rerr == nil && role != nil && role.OutputKVMount != "" {
-			_ = b.deleteCertOutput(ctx, req.ClientToken, role.OutputKVMount, key)
-		}
+	// 3. 联动清理 KV 证书输出（尽力而为）：优先条目记录的最后成功写入位置。
+	if mount := b.resolveOutputKVMount(ctx, req.Storage, entry); mount != "" {
+		_ = b.deleteCertOutput(ctx, req.ClientToken, mount, key)
 	}
 
 	return &logical.Response{
@@ -459,7 +506,7 @@ func (b *backend) pathCertRenewExplicit(ctx context.Context, req *logical.Reques
 
 	key := cacheKey(role, entry.Domains)
 	v, err, _ := b.issueGroup.Do(key, func() (any, error) {
-		return b.doIssue(ctx, req, roleName, role, account, entry.CN, entry.Domains, key, nil)
+		return b.doIssue(ctx, req, roleName, role, account, entry.CN, entry.Domains, key, nil, kvPolicyBestEffort)
 	})
 	if err != nil {
 		return logical.ErrorResponse("续订失败: %v", err), nil

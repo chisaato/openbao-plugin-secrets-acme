@@ -12,6 +12,11 @@
 
 插件通过引用读取 KV 引擎中的 DNS API 凭据，签发时动态加载，不持久化敏感 Secret：
 
+此处假定
+
+- 你的 KVv2 引擎挂载于 `secret`
+- 条目名称为 `dns/cloudflare`
+
 ```sh
 bao kv put secret/dns/cloudflare \
   CLOUDFLARE_DNS_API_TOKEN="<你的 Cloudflare API Token>"
@@ -35,6 +40,12 @@ bao write acme/dns-providers/cloudflare-primary \
 - `skip_propagation_check=false`（默认）：lego 主动对权威/递归 NS 发起 DNS 传播预检。
 - `skip_propagation_check=true`：跳过预检，执行 `Present` 写入记录后固定等待 `propagation_wait` 秒后即提交 ACME 验证。适合内网自签/Pebble 模拟测试环境。
 - **聚合粒度说明**：预检策略以**整次签发请求**为粒度聚合。如果 Account 绑定的多个 Provider 中有任意一个设置了 `skip_propagation_check=true`，整批请求的域名均会跳过预检。
+- **重命名 Provider**（纯本地改名，不重新校验凭据）：
+  ```sh
+  bao write acme/dns-providers/cloudflare-primary/rename new_name=cloudflare-main
+  ```
+  语义：级联更新所有 account 的 `dns_providers[].name` 引用（保留列表顺序），最后迁移条目本身。
+  Provider 名不参与 cacheKey，缓存与 KV 输出无需迁移。响应 `data` 含 `old_name`/`new_name`/`migrated_accounts`。
 
 ---
 
@@ -64,6 +75,15 @@ bao write acme/accounts/prod \
   ```sh
   bao read acme/accounts/prod/key
   ```
+- **重命名账户**（纯本地改名，不调用 CA）：
+  ```sh
+  bao write acme/accounts/prod/rename new_name=prod-2026
+  ```
+  语义：级联更新引用旧账户名的 `roles` 与 `jobs`，并按新 `role.Account` 重算、
+  迁移证书缓存键（先写新键再删旧键）；`output_kv_mount` 的 KV 输出迁移为尽力而为，
+  失败仅在响应 `warnings` 中告警而不阻断。响应 `data` 含
+  `old_name`/`new_name`/`migrated_roles`/`migrated_jobs`/`migrated_certs`，以及可选的
+  `warnings`。存量 lease 仍按其旧 `cache_key` 定位条目，条目缺失时优雅降级，无需额外处理。
 - **查看与清空证书缓存**：
   ```sh
   bao read acme/cache
@@ -94,7 +114,25 @@ bao write acme/roles/web \
   - 写入内容包括标准化资产字段：`cert`、`key`、`ca`、`fullchain`（叶子证书+中间证书链）。
   - 同时保留向下兼容别名：`certificate`、`private_key`、`issuer_cert`。
   - 以及扁平化元数据：`cert_id`、`common_name`、`domains`、`role`、`account`、`not_before`、`not_after`。
+  - **投影语义**：ACME 是事实源，KV 是投影。手动删除 KV 条目不会影响证书/缓存，下次签发或续期会按需恢复投影。
+  - **投影状态**（缓存条目记录，可经 `GET certs/{role}/{cn}` 或 `GET certs/id/{id}` 的 `output_kv_status`/`output_kv_mount`/`output_kv_path`、以及 `LIST certs/` 摘要查看）：
+    - `written`：上次成功写入，`output_kv_mount` 为成功时的 mount。
+    - `skipped_conflict`：因目标被占用而跳过；`output_kv_mount` 保持"最后成功写入位置"不变。
+    - `skipped_error`：因占用检查读取失败而跳过；mount 同上保持。
+    - 空：未配置同步，或旧条目（零值回退）。
+    - `output_kv_path`：条目记录的**完整输出路径**（`mount + "/" + certs/{cert_id}`，如 `certs/certs/abc123`），语义与 `output_kv_mount` 一致——最后成功写入的位置，跳过时保持旧值不变。展示于 `GET certs/{role}/{cn}`/`GET certs/id/{id}` 与 `LIST certs/` 摘要；旧条目未记录该字段时，展示层按记录的 mount 现场回退拼接 `mount + "/" + certs/{cert_id}`。
+    撤销/引用归零时的 KV 清理优先使用条目记录的 `output_kv_mount`，为空才回退 role 现值。
+  - **占用冲突**：写入前检查目标 `certs/{cert_id}` 是否已被其他证书或外来数据占用（现存数据 `cert_id` 与本次一致视为自己的旧版本，允许覆写）。冲突表现随调用方而异：
+    - 同步签发（`sync=true`）：**拒绝签发**，错误含占用者详情；清理该 KV 条目，或加 `force=true` 显式覆盖。
+    - 异步 Job：任务落 `failed`，`error` 说明占用详情与处理建议。
+    - Lease 自动续期：跳过 KV 写并记 warning 日志，续期照常成功（响应无 `output_path`），绝不因投影冲突阻断证书续期。
 - `disable_cert_reuse`：默认为 `false`。若为 `true`，该 Role 将不参与 Account 级的证书覆盖与复用机制。
+- **重命名 Role**（纯本地改名）：
+  ```sh
+  bao write acme/roles/web/rename new_name=web-prod
+  ```
+  语义：cacheKey 不含 role 名，故**缓存键与 KV 输出路径不变**，仅更新引用——`jobs` 的 `role` 字段与缓存条目的 `role` 字段（原键原位覆写），最后迁移 role 条目本身。响应 `data` 含 `old_name`/`new_name`/`migrated_jobs`/`migrated_certs`。
+  存量 lease 的 `InternalData["role"]` 为创建时快照；续期时会回退到缓存条目记录的签发 role 现名，自动适配改名。
 
 ---
 
@@ -113,6 +151,7 @@ bao read acme/jobs/<job_id>
 ```
 
 **异步任务运维**：
+
 - `bao list acme/jobs/`：列出当前所有任务。
 - `bao delete acme/jobs/<job_id>`：清理已完成或失败的历史任务。
 - **任务容灾**：任务状态持久化存储于 Storage 中。插件若遭遇重启或 unseal，后台会自动恢复并重新驱动未完成的 Job。

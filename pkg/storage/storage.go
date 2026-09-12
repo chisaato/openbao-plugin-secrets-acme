@@ -109,6 +109,15 @@ type CacheEntry struct {
 	CertificatePEM       string   `json:"certificate_pem"`
 	IssuerCertificatePEM string   `json:"issuer_certificate_pem"`
 	Role                 string   `json:"role,omitempty"`
+	// OutputKVMount：上次成功写入的 KV mount。空=尚未成功写过。
+	OutputKVMount string `json:"output_kv_mount,omitempty"`
+	// OutputKVPath：上次成功写入的完整 KV 数据路径（mount + "/" + certs/{certID}），
+	// 如 "secret/certs/abc123"。语义与 OutputKVMount 一致：最后成功写入的位置；
+	// BestEffort 冲突/读失败跳过时保持旧值不更新。空=旧条目（展示层回退拼接）。
+	OutputKVPath string `json:"output_kv_path,omitempty"`
+	// OutputKVStatus：投影状态 written/skipped_conflict/skipped_error；空=未配置
+	// 同步或旧条目（零值回退）。
+	OutputKVStatus string `json:"output_kv_status,omitempty"`
 }
 
 // --- Account CRUD ---

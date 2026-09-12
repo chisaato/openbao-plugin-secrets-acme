@@ -184,6 +184,29 @@ func NewProviderCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(setCmd, getCmd, listCmd, delCmd)
+	renameCmd := &cobra.Command{
+		Use:   "rename <old> <new>",
+		Short: "重命名 DNS Provider（本地改名并迁移 account 引用）",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := GetClient()
+			if err != nil {
+				return err
+			}
+			res, err := cli.RenameDNSProvider(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+			if FlagFormat == "json" {
+				PrintOutput(res)
+			} else {
+				fmt.Printf("DNS Provider %q 已改名为 %q (迁移 accounts=%d)\n",
+					res.OldName, res.NewName, res.MigratedAccounts)
+			}
+			return nil
+		},
+	}
+
+	cmd.AddCommand(setCmd, getCmd, listCmd, delCmd, renameCmd)
 	return cmd
 }

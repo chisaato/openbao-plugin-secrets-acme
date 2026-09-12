@@ -2,12 +2,13 @@ package acme
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/dns"
 	"github.com/go-acme/lego/v5/certcrypto"
 	"github.com/go-acme/lego/v5/certificate"
-	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/dns"
 	"github.com/go-acme/lego/v5/challenge"
 	"github.com/go-acme/lego/v5/challenge/dns01"
 	"github.com/openbao/openbao/sdk/v2/framework"
@@ -18,7 +19,7 @@ func pathCerts(b *backend) []*framework.Path {
 	return []*framework.Path{{
 		Pattern: "certs/" + framework.GenericNameRegex("role"),
 		Fields: map[string]*framework.FieldSchema{
-			"role":              {Type: framework.TypeString, Description: "role 名。"},
+			"role":                   {Type: framework.TypeString, Description: "role 名。"},
 			"common_name":            {Type: framework.TypeString, Required: true, Description: "主域名（可含通配符 *.）。"},
 			"alternative_names":      {Type: framework.TypeCommaStringSlice, Description: "附加域名。"},
 			"alt_names":              {Type: framework.TypeCommaStringSlice, Description: "附加域名别名 (同 alternative_names)。"},
@@ -191,7 +192,7 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 			if err != nil {
 				return nil, err
 			}
-			resp, err := b.respondWithCert(ctx, req, roleName, role, entry, key, false, "")
+			resp, err := b.respondWithCert(ctx, req, roleName, role, entry, key, false, "", kvPolicyEnforce)
 			if err != nil {
 				// 与新鲜签发路径一致：包装为错误响应（而非裸 error）。
 				return logical.ErrorResponse("签发失败: %v", err), nil
@@ -213,7 +214,7 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 			}); uerr != nil {
 				return nil, uerr
 			}
-			resp, rerr := b.respondWithCert(ctx, req, roleName, role, reuseEntry, rkey, false, b.reuseKVPath(ctx, req.Storage, roleName, role, reuseEntry, rkey))
+			resp, rerr := b.respondWithCert(ctx, req, roleName, role, reuseEntry, rkey, false, b.reuseKVPath(ctx, req.Storage, roleName, role, reuseEntry, rkey), kvPolicyEnforce)
 			if rerr != nil {
 				return logical.ErrorResponse("签发失败: %v", rerr), nil
 			}
@@ -260,11 +261,20 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 	//    响应并各自建 lease，返回前须经 waiterRefAdd 补自增，否则任一 lease
 	//    撤销即提前归零、误删条目并真撤销兄弟 lease 仍在用的证书。
 	executed := false
+	// 冲突策略：默认 Enforce 拒绝；force=true 时跳过占用检查直接覆写。
+	policy := kvPolicyEnforce
+	if forceNew {
+		policy = kvPolicyOverwrite
+	}
 	v, err, _ := b.issueGroup.Do(key, func() (interface{}, error) {
 		executed = true
-		return b.doIssue(ctx, req, roleName, role, account, cn, domains, key, ov)
+		return b.doIssue(ctx, req, roleName, role, account, cn, domains, key, ov, policy)
 	})
 	if err != nil {
+		var conflict *kvConflictError
+		if errors.As(err, &conflict) {
+			return logical.ErrorResponse("签发被拒绝: %v（清理该 KV 条目，或使用 force=true 显式覆盖）", err), nil
+		}
 		return logical.ErrorResponse("签发失败: %v", err), nil
 	}
 	resp, ok := v.(*logical.Response)
@@ -328,7 +338,8 @@ func (b *backend) obtainCert(ctx context.Context, req *logical.Request, account 
 }
 
 // doIssue：obtainCert→缓存（Users=1 对应领导者 lease）→KV 输出→响应。
-func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, account *accountEntry, cn string, domains []string, key string, ov *dns01Overrides) (*logical.Response, error) {
+// policy 控制 KV 输出占用冲突的处理（Enforce/Overwrite/BestEffort）。
+func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, account *accountEntry, cn string, domains []string, key string, ov *dns01Overrides, policy kvWritePolicy) (*logical.Response, error) {
 	res, err := b.obtainCert(ctx, req, account, domains, ov)
 	if err != nil {
 		return nil, err
@@ -346,6 +357,13 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 		CertificatePEM:       string(res.Certificate),
 		IssuerCertificatePEM: string(res.IssuerCertificate),
 	}
+	// 继承上次成功写入位置：续期/重签时 BestEffort 冲突跳过需保留旧 Mount/Path 作为
+	// "最后成功写入位置"（撤销清理依赖它）；成功写入时会被 writeCertOutput 覆盖。
+	if prev, gerr := b.cacheGet(ctx, req.Storage, key); gerr == nil && prev != nil {
+		entry.OutputKVMount = prev.OutputKVMount
+		entry.OutputKVPath = prev.OutputKVPath
+		entry.OutputKVStatus = prev.OutputKVStatus
+	}
 	if !role.DisableCache {
 		// disable_cache：纯直通不落缓存（也无引用计数）——否则同 key 二次
 		// 签发会以 Users=1 覆写已有条目，破坏 Users==lease 数不变式：首个
@@ -355,7 +373,23 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 			return nil, err
 		}
 	}
-	return b.respondWithCert(ctx, req, roleName, role, entry, key, true, "")
+	resp, err := b.respondWithCert(ctx, req, roleName, role, entry, key, true, "", policy)
+	if err != nil {
+		return nil, err
+	}
+	// writeCertOutput 会就地更新 entry 的投影字段，但 cachePut 已在此前完成，
+	// 需在单写临界区内把三字段同步进存储条目。KV 硬失败路径（cacheDelete）不走此处。
+	if !role.DisableCache && role.OutputKVMount != "" {
+		if uerr := b.cacheUpdate(ctx, req.Storage, key, func(e *cacheEntry) *cacheEntry {
+			e.OutputKVMount = entry.OutputKVMount
+			e.OutputKVPath = entry.OutputKVPath
+			e.OutputKVStatus = entry.OutputKVStatus
+			return e
+		}); uerr != nil {
+			return nil, uerr
+		}
+	}
+	return resp, nil
 }
 
 // respondWithCert：组装响应（含证书有效期）+ MaxTTL=证书剩余寿命。
@@ -366,11 +400,11 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 // 持续故障期间还会反复触发完整 ACME Obtain 暴露限流）；kvPathOverride 非空
 // 时（覆盖复用）以其为 output_path（指向签发 role 名下真实写入位置），
 // 否则按请求 role 的 output_kv_mount 推导。
-func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, entry *cacheEntry, key string, freshIssue bool, kvPathOverride string) (*logical.Response, error) {
+func (b *backend) respondWithCert(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, entry *cacheEntry, key string, freshIssue bool, kvPathOverride string, policy kvWritePolicy) (*logical.Response, error) {
 	kvPath := ""
 	if freshIssue {
 		var err error
-		kvPath, err = b.writeCertOutput(ctx, req, roleName, role, key, entry)
+		kvPath, err = b.writeCertOutput(ctx, req, roleName, role, key, entry, policy)
 		if err != nil {
 			// 不变式：签发成功+KV 成功 = Users=1 = lease 数。KV 失败时响应无
 			// Secret、core 不会建 lease，残留条目（Users≥1）将无人释放成为孤儿
@@ -418,6 +452,10 @@ func (b *backend) issueResponse(entry *cacheEntry, key, account, role, kvPath st
 	}
 	if kvPath != "" {
 		data["output_path"] = kvPath
+	}
+	// KV 投影状态：written/skipped_conflict/skipped_error（空=未配置同步）。
+	if entry.OutputKVStatus != "" {
+		data["output_kv_status"] = entry.OutputKVStatus
 	}
 	resp := &logical.Response{Data: data}
 	resp.Secret = &logical.Secret{
