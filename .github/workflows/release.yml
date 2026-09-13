@@ -62,9 +62,22 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      # 将 SHA256SUMS 渲染进 Release 正文（正文在前，generate_release_notes 追加在后），
+      # 免去下载附件才能复制校验和。
+      - name: Render SHA256SUMS into release body
+        run: |
+          {
+            echo "## SHA256 Checksums"
+            echo ""
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > release_body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*
+          body_path: release_body.md
           generate_release_notes: true
