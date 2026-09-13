@@ -139,7 +139,7 @@ skipping plugin-based mount entry
 
 **判定**：数据大概率还在（`bao secrets list -detailed` 中 mount 条目仍在，`uuid` 未变，只是没加载）。
 
-**抢救步骤**（在旧版本条目被清理后 30 分钟内……实际上任何时候都可以，只要没做 §4 的操作）：
+**抢救步骤**（在旧版本条目被清理后 30 分钟内……实际上任何时候都可以，只要没做 §5 的操作）：
 
 1. 按本文 §2 把**旧版本**加回来（HCL 块 / 二进制 / `plugin register`，恢复到"新旧并存"状态）；
 2. 重启 OpenBao（或 SIGHUP）→ mount 按原 UUID 恢复加载，数据应当全部回来；
@@ -152,7 +152,39 @@ bao secrets list -detailed   # mount 存在，plugin_version 与 uuid 符合预�
 bao plugin list -versioned   # 新旧版本都已注册
 ```
 
-## 4. 什么情况会**真正**丢数据
+## 4. 事故恢复：升级后 mount 卡在 setup 只读（写请求全部 500）
+
+**症状**：插件升级并重启后，mount **读操作正常**，但**任意写操作**（含本插件任何端点的写）返回：
+
+```
+Code: 500.
+* cannot write to storage during setup
+```
+
+**原因**：OpenBao core 在 mount 构建/恢复期间会为该 mount 的 storage view 打上只读标记（`logical.ErrSetupReadOnly`，见 `sdk/logical/storage.go`），正常在 mount 加载完成后自动清除。升级过渡期（新旧版本并存、mount 尚未 `tune` 到新版本）或恢复流程异常（典型：catalog 注册的 `sha256sum` 与实际二进制不一致，插件加载失败导致恢复中止）时，标记残留，该 mount 的所有写请求被 core 拒绝。
+
+**诊断**：
+
+```sh
+# 1. 服务端日志找插件加载/恢复报错（最直接）
+journalctl -u bao | grep -iE "acme|plugin|setup|read.?only"
+# docker: docker logs <container> 2>&1 | grep -iE "acme|plugin|setup"
+
+# 2. 对比 catalog 注册的 sha 与磁盘二进制
+bao plugin info openbao-plugin-secrets-acme
+sha256sum /etc/openbao/plugins/openbao-plugin-secrets-acme-*
+```
+
+**恢复**：
+
+1. 若 sha 不匹配：修正 `plugin register` / HCL 块的 `sha256sum`；
+2. **重启 OpenBao 并 unseal**，让 mount 重新走完整恢复流程（in-process 插件必须重启进程才会重新加载，仅改注册不重启无效）；
+3. 确认 `bao read sys/mounts/acme` 的 `running_version` 符合预期后，再做一次写操作验证；
+4. 期间**不要** `secrets disable` 重挂（数据会丢）；确需 remount 用 `bao secrets move`（保留数据）。
+
+> 排障期间读操作不受影响（只读标记只拦写），可放心用 `bao read` 验证数据完好。
+
+## 5. 什么情况会**真正**丢数据
 
 以下操作不可恢复，升级排障时**严禁**：
 
