@@ -248,7 +248,7 @@ bao-acme role rename web web-prod
 #### 1. 列出证书 (`cert list`)
 
 ```bash
-# 列出系统内所有证书 (表格展示 12 位短 ID, 主域名, 全部 SAN 域名, Role, 到期时间与状态)
+# 列出系统内所有证书 (表格展示 12 位短 ID, 主域名, 全部 SAN 域名, Role, Account, 到期时间与状态)
 bao-acme cert list
 
 # 按域名模糊/精确过滤 (支持泛域名匹配，如 -d api.example.com 会匹配包含 *.example.com 的证书)

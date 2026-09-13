@@ -214,7 +214,7 @@ func NewCertCmd() *cobra.Command {
 			}
 
 			tw := newTabWriter(cmd.OutOrStdout())
-			fmt.Fprintln(tw, "CERT ID\tCOMMON NAME\tDOMAINS\tROLE\tEXPIRES\tSTATUS\tKV")
+			fmt.Fprintln(tw, "CERT ID\tCOMMON NAME\tDOMAINS\tROLE\tACCOUNT\tEXPIRES\tSTATUS\tKV")
 			for _, c := range certs {
 				rem := formatRemaining(c.NotAfter)
 				status := "Active"
@@ -239,8 +239,8 @@ func NewCertCmd() *cobra.Command {
 				if kvStatus == "" {
 					kvStatus = "-"
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					certID, c.CommonName, doms, c.Role, rem, status, kvStatus)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					certID, c.CommonName, doms, c.Role, c.Account, rem, status, kvStatus)
 			}
 			_ = tw.Flush()
 			return nil
