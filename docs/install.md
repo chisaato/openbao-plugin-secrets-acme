@@ -66,3 +66,5 @@ plugin "secret" "openbao-plugin-secrets-acme" {
 ## 下一步
 
 安装完成后，请阅读 **[部署与 Token 设置](deployment.md)** 配置插件运行所需的服务身份 Token 与环境变量。
+
+**升级插件版本前务必阅读 [升级指南](upgrade.md)**——直接替换版本号会导致旧 mount 加载失败、数据"消失"（可恢复，但有正确流程）。
