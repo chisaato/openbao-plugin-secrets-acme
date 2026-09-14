@@ -1,13 +1,47 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/api"
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/client"
 	"github.com/spf13/cobra"
 )
+
+// writeDNSProvider 以扁平标量凭据字段写入 dns-providers/{name}。
+// 插件新 API 优先接受 credentials_mount / credentials_path（credentials_ref 对象
+// 形态仅在读取兼容路径保留），因此这里不再复用会发出嵌套对象的 Client.SetDNSProvider。
+func writeDNSProvider(ctx context.Context, cli *client.Client, name string, p api.DNSProvider, credMount, credPath string) error {
+	data := map[string]any{
+		"type":              p.Type,
+		"credentials_mount": credMount,
+		"credentials_path":  credPath,
+	}
+	if p.PropagationTimeout > 0 {
+		data["propagation_timeout"] = p.PropagationTimeout.String()
+	}
+	if p.PollingInterval > 0 {
+		data["polling_interval"] = p.PollingInterval.String()
+	}
+	if p.SkipPropagationCheck {
+		data["skip_propagation_check"] = p.SkipPropagationCheck
+	}
+	if p.PropagationWait > 0 {
+		data["propagation_wait"] = p.PropagationWait
+	}
+	if len(p.Resolvers) > 0 {
+		data["resolvers"] = p.Resolvers
+	}
+
+	mount := strings.Trim(FlagMount, "/")
+	logicalPath := path.Join(mount, "dns-providers/"+name)
+	_, err := cli.RawClient().Logical().WriteWithContext(ctx, logicalPath, data)
+	return err
+}
 
 func NewProviderCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -48,18 +82,19 @@ func NewProviderCmd() *cobra.Command {
 			if cmd.Flags().Changed("type") {
 				p.Type = pType
 			}
-			if cmd.Flags().Changed("cred-path") || cmd.Flags().Changed("cred-mount") {
-				mount := credMount
-				if mount == "" {
-					mount = "secret"
-				}
-				if p.CredentialsRef != nil && !cmd.Flags().Changed("cred-mount") {
-					mount = p.CredentialsRef.Mount
-				}
-				p.CredentialsRef = &api.CredentialsRef{
-					Mount: mount,
-					Path:  credPath,
-				}
+
+			// 解析凭据引用（扁平标量）：存量 mount/path 仅在对应 flag 未显式覆盖时沿用，
+			// 保证增量更新不会丢失既有凭据信息，也不会用空值覆盖。
+			mount := credMount
+			if mount == "" {
+				mount = "secret"
+			}
+			if !cmd.Flags().Changed("cred-mount") && p.CredentialsRef != nil {
+				mount = p.CredentialsRef.Mount
+			}
+			credPathVal := credPath
+			if !cmd.Flags().Changed("cred-path") && p.CredentialsRef != nil {
+				credPathVal = p.CredentialsRef.Path
 			}
 			if cmd.Flags().Changed("prop-timeout") {
 				d, err := time.ParseDuration(propTimeout)
@@ -88,11 +123,11 @@ func NewProviderCmd() *cobra.Command {
 			if p.Type == "" {
 				return fmt.Errorf("全新配置 DNS Provider 时 --type 为必填项")
 			}
-			if p.CredentialsRef == nil || p.CredentialsRef.Path == "" {
+			if credPathVal == "" {
 				return fmt.Errorf("全新配置 DNS Provider 时 --cred-path 为必填项")
 			}
 
-			if err := cli.SetDNSProvider(cmd.Context(), name, p); err != nil {
+			if err := writeDNSProvider(cmd.Context(), cli, name, p, mount, credPathVal); err != nil {
 				return err
 			}
 			fmt.Printf("DNS Provider %q 配置成功\n", name)

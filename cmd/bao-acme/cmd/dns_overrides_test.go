@@ -74,6 +74,11 @@ func TestCLIDNSOverridesAndResolvers(t *testing.T) {
 	assert.Equal(t, true, recordedProviderData["skip_propagation_check"])
 	assert.Equal(t, float64(60), recordedProviderData["propagation_wait"])
 	assert.Equal(t, []any{"223.5.5.5:53", "1.1.1.1:53"}, recordedProviderData["resolvers"])
+	// 凭据以扁平标量发送，不再使用 credentials_ref 嵌套对象
+	assert.Equal(t, "secret", recordedProviderData["credentials_mount"])
+	assert.Equal(t, "dns/cf", recordedProviderData["credentials_path"])
+	_, hasNested := recordedProviderData["credentials_ref"]
+	assert.False(t, hasNested, "请求体不应再包含 credentials_ref 嵌套对象")
 
 	// 2. CLI cert issue 支持单次覆盖 --skip-check, --prop-wait, --resolvers
 	cmdIssue := NewRootCmd()

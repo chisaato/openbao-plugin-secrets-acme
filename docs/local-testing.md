@@ -100,8 +100,15 @@ bin/bao-acme job get <job_id>
 
 ```bash
 # DNS provider（指向上面的 KV）
+# 注：HTTP JSON 下 credentials_ref 对象形态仍合法；也可改用标量字段
+#     credentials_mount / credentials_path（原生 bao CLI 只支持这种标量写法）
 curl -s -H "X-Vault-Token: $BAO_TOKEN" -X POST \
   -d '{"type":"cloudflare","credentials_ref":{"mount":"secret","path":"dns/cf"}}' \
+  $BAO_ADDR/v1/acme/dns-providers/cf
+
+# 等价的标量字段写法（推荐，且与原生 bao CLI 一致）
+curl -s -H "X-Vault-Token: $BAO_TOKEN" -X POST \
+  -d '{"type":"cloudflare","credentials_mount":"secret","credentials_path":"dns/cf","credentials_kv_version":"2"}' \
   $BAO_ADDR/v1/acme/dns-providers/cf
 
 # ACME 账户（本地无公网 CA 时可先用 pebble 或 LE staging 的 server_url）

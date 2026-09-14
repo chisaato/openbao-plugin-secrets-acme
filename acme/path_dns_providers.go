@@ -2,6 +2,7 @@ package acme
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -18,6 +19,46 @@ const storageKeyDNSProviders = storage.StorageKeyDNSProviders
 
 // dnsProviderEntry 兼容 storage.DNSProviderEntry
 type dnsProviderEntry = storage.DNSProviderEntry
+
+// handleLegacyCredentialsRef 兼容旧客户端的嵌套 credentials_ref：新 schema 将
+// 其声明为 TypeString，而框架在回调前会对请求字段做类型校验，遇到 map 会直接
+// 返回 "Field validation failed"（400），旧对象形态因此不可达。这里在进入框架
+// 前把非字符串的 credentials_ref 归一化为 JSON 字符串，使其仍能走通；仅作用于
+// dns-providers 路径，且不改动其余请求。
+func handleLegacyCredentialsRef(req *logical.Request) {
+	if req == nil || req.Data == nil {
+		return
+	}
+	if !strings.HasPrefix(req.Path, "dns-providers/") {
+		return
+	}
+	raw, ok := req.Data["credentials_ref"]
+	if !ok || raw == nil {
+		return
+	}
+	if _, isString := raw.(string); isString {
+		return
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		// 保持原值，让回调的 default 分支返回 400（而非 panic）。
+		return
+	}
+	req.Data["credentials_ref"] = string(encoded)
+}
+
+// HandleRequest 在框架处理前做一次凭据引用兼容归一化（见 handleLegacyCredentialsRef）。
+func (b *backend) HandleRequest(ctx context.Context, req *logical.Request) (*logical.Response, error) {
+	handleLegacyCredentialsRef(req)
+	return b.Backend.HandleRequest(ctx, req)
+}
+
+// HandleExistenceCheck 同 HandleRequest：存在性检查同样会先做字段类型校验，
+// 故需在委派前归一化，避免旧客户端被 ACL 存在性检查拦下。
+func (b *backend) HandleExistenceCheck(ctx context.Context, req *logical.Request) (bool, bool, error) {
+	handleLegacyCredentialsRef(req)
+	return b.Backend.HandleExistenceCheck(ctx, req)
+}
 
 // validateProviderEntry fail-fast 试读凭据并试构造 provider；
 // 凭据仅在请求生命周期内使用，不落存储、不进日志、不进响应。
@@ -54,9 +95,29 @@ func pathDNSProviders(b *backend) []*framework.Path {
 			Type:        framework.TypeString,
 			Description: "lego provider 类型，白名单：cloudflare、alidns、tencentcloud、exec。创建后不可改。",
 		},
+		"credentials_mount": {
+			Type:        framework.TypeString,
+			Description: "凭据所在的 KV mount（如 secret）。",
+		},
+		"credentials_path": {
+			Type:        framework.TypeString,
+			Description: "凭据在 KV mount 内的路径（如 dns/cloudflare）。",
+		},
+		"credentials_kv_version": {
+			Type:        framework.TypeString,
+			Description: "KV 引擎版本 \"1\" 或 \"2\"；留空沿用默认(2)。",
+		},
+		"credentials_version": {
+			Type:        framework.TypeInt,
+			Description: "读取 KV 指定版本的数据；0=最新。",
+		},
+		"credentials_keys": {
+			Type:        framework.TypeString,
+			Description: "JSON 对象字符串，键名映射 {lego 变量名: 用户 KV 键名}，如 '{\"CLOUDFLARE_DNS_API_TOKEN\":\"cf_token\"}'。",
+		},
 		"credentials_ref": {
-			Type:        framework.TypeMap,
-			Description: "凭据引用 {mount, path, kv_version=\"2\", version=0, keys={LEGO_VAR: 用户键名}}。写操作时试读校验但不快照。",
+			Type:        framework.TypeString,
+			Description: "（兼容）旧格式凭据引用，接受 JSON 对象或 JSON 字符串 {mount,path,kv_version,version,keys}；被上述标量字段逐项覆盖。",
 		},
 		"propagation_timeout": {
 			Type:        framework.TypeDurationSecond,
@@ -154,12 +215,58 @@ func (b *backend) pathDNSProviderWrite(ctx context.Context, req *logical.Request
 		return logical.ErrorResponse("type 必填"), nil
 	}
 
-	if refRaw, ok := d.GetOk("credentials_ref"); ok {
-		ref := &credentialsRef{}
-		if err := mapstructure.WeakDecode(refRaw, ref); err != nil {
-			return logical.ErrorResponse("credentials_ref 解析失败: %v", err), nil
+	// 凭据引用：先以存量值为底，再依次应用 credentials_ref（兼容旧客户端）与扁平
+	// 标量字段，实现字段级增量覆盖。credentials_ref 直接读 d.Raw 绕过 schema 类型
+	// 转换，任何解析失败都返回 400，绝不 panic/500。
+	ref := credentialsRef{}
+	if existing != nil && existing.CredentialsRef != nil {
+		ref = *existing.CredentialsRef
+	}
+	refTouched := false
+	if raw, ok := d.Raw["credentials_ref"]; ok && raw != nil {
+		switch v := raw.(type) {
+		case map[string]interface{}:
+			// 旧 bao-acme CLI 直接发嵌套对象；框架尚未转换。
+			if err := mapstructure.WeakDecode(v, &ref); err != nil {
+				return logical.ErrorResponse("credentials_ref 解析失败: %v", err), nil
+			}
+			refTouched = true
+		case string:
+			if err := json.Unmarshal([]byte(v), &ref); err != nil {
+				return logical.ErrorResponse("credentials_ref 需为 JSON 对象/字符串，或改用 credentials_mount/credentials_path 标量字段"), nil
+			}
+			refTouched = true
+		default:
+			return logical.ErrorResponse("credentials_ref 需为 JSON 对象/字符串，或改用 credentials_mount/credentials_path 标量字段"), nil
 		}
-		entry.CredentialsRef = ref
+	}
+	// 扁平标量逐项覆盖（仅显式出现时覆盖，保持增量更新语义）。
+	if v, ok := d.GetOk("credentials_mount"); ok {
+		ref.Mount = v.(string)
+		refTouched = true
+	}
+	if v, ok := d.GetOk("credentials_path"); ok {
+		ref.Path = v.(string)
+		refTouched = true
+	}
+	if v, ok := d.GetOk("credentials_kv_version"); ok {
+		ref.KVVersion = v.(string)
+		refTouched = true
+	}
+	if v, ok := d.GetOk("credentials_version"); ok {
+		ref.Version = v.(int)
+		refTouched = true
+	}
+	if v, ok := d.GetOk("credentials_keys"); ok {
+		var keys map[string]string
+		if err := json.Unmarshal([]byte(v.(string)), &keys); err != nil {
+			return logical.ErrorResponse("credentials_keys 需为 JSON 对象字符串: %v", err), nil
+		}
+		ref.Keys = keys
+		refTouched = true
+	}
+	if refTouched {
+		entry.CredentialsRef = &ref
 	}
 	if v, ok := d.GetOk("propagation_timeout"); ok {
 		entry.PropagationTimeout = time.Duration(v.(int)) * time.Second

@@ -53,7 +53,7 @@ DNS Provider 白名单与构造适配器定义在 `acme/providers.go`。若需�
    "mydns": buildMyDNS,
    ```
 2. **声明凭据 Key 白名单**：
-   在 `envNames` 中声明该 Provider 所需的环境变量名称（即 `credentials_ref.keys` 的合法映射目标）：
+   在 `envNames` 中声明该 Provider 所需的环境变量名称（即 `credentials_keys` JSON 映射的合法目标）：
    ```go
    "mydns": {"MYDNS_TOKEN", "MYDNS_SECRET"},
    ```
@@ -71,7 +71,9 @@ DNS Provider 白名单与构造适配器定义在 `acme/providers.go`。若需�
 ```sh
 bao write acme/dns-providers/mydns-exec \
   type=exec \
-  credentials_ref='mount=secret,path=dns/mydns,kv_version=2' \
+  credentials_mount=secret \
+  credentials_path=dns/mydns \
+  credentials_kv_version=2 \
   propagation_timeout=300 \
   skip_propagation_check=true \
   propagation_wait=30

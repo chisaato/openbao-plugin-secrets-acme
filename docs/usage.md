@@ -26,14 +26,30 @@ bao kv put secret/dns/cloudflare \
 
 ## 2. 注册 DNS Provider
 
-通过 `credentials_ref` 指向刚才保存的 KV 地址：
+通过 `credentials_mount` / `credentials_path` 指向刚才保存的 KV 地址：
 
 ```sh
 bao write acme/dns-providers/cloudflare-primary \
   type=cloudflare \
-  credentials_ref='mount=secret,path=dns/cloudflare,kv_version=2' \
+  credentials_mount=secret \
+  credentials_path=dns/cloudflare \
+  credentials_kv_version=2 \
   propagation_timeout=120
 ```
+
+**高级：键名映射**
+
+当 KV 中的 Key 名与 lego 预期的环境变量名不一致时，用 `credentials_keys` 传 JSON 对象字符串（键为 lego 环境变量名，值为用户 KV 中的键名）：
+
+```sh
+bao write acme/dns-providers/aliyun \
+  type=alidns \
+  credentials_mount=secret \
+  credentials_path=dns/aliyun \
+  credentials_keys='{"ALICLOUD_ACCESS_KEY":"ak","ALICLOUD_SECRET_KEY":"sk"}'
+```
+
+可选地，`credentials_kv_version`（字符串 `"1"`/`"2"`，默认 `2`）与 `credentials_version`（整数，`0` 表示最新）用于指定 KV 引擎版本与条目版本。
 
 ### 传播控制参数（对齐 lego v5 CLI 语义）
 
@@ -54,13 +70,20 @@ bao write acme/dns-providers/cloudflare-primary \
 在指定的 ACME 服务商（如 Let's Encrypt）注册或绑定账户：
 
 ```sh
-bao write acme/accounts/prod \
-  server_url="https://acme-v02.api.letsencrypt.org/directory" \
-  contact="ops@example.com" \
-  terms_of_service_agreed=true \
-  key_type=EC256 \
-  dns_providers='[{"name":"cloudflare-primary","zones":["example.com"]}]'
+bao write acme/accounts/prod - <<'EOF'
+{
+  "server_url": "https://acme-v02.api.letsencrypt.org/directory",
+  "contact": "mailto:ops@example.com",
+  "terms_of_service_agreed": true,
+  "key_type": "EC256",
+  "dns_providers": [
+    { "name": "cloudflare-primary", "zones": ["example.com"] }
+  ]
+}
+EOF
 ```
+
+> `dns_providers` 属于结构化复杂字段，原生 `bao` CLI 需用 JSON stdin（`bao write <path> -`）或 `@file` 引用传入；只有简单标量字段才可直接 `key=value`。上述写法也等价于 `bao write <path> - < payload.json`。
 
 - **Zone 路由规则**：签发时根据域名后缀自动匹配 Provider（后缀段数多的优先匹配，段数相同时按列表顺序）。**`zones` 为空的 Provider 条目作为默认兜底路由**；如果未找到任何匹配则直接报错。
 - **`insecure_tls` 风险注记**：若设为 `true`，将关闭与 ACME CA 交互时的 TLS 证书校验。**严禁在生产开启，仅限 Pebble 本地测试**。
@@ -84,6 +107,29 @@ bao write acme/accounts/prod \
   失败仅在响应 `warnings` 中告警而不阻断。响应 `data` 含
   `old_name`/`new_name`/`migrated_roles`/`migrated_jobs`/`migrated_certs`，以及可选的
   `warnings`。存量 lease 仍按其旧 `cache_key` 定位条目，条目缺失时优雅降级，无需额外处理。
+- **导出账户**（跨实例迁移用；载荷含私钥，高敏感）：
+  ```sh
+  bao read acme/accounts/prod/export
+  ```
+  返回 `kind`/`version`/`name`/`server_url`/`contact`/`terms_of_service_agreed`/
+  `key_type`/`private_key_pem`/`registration_json`。载荷可直接作为 import 的输入；
+  不含端点本地配置（`insecure_tls`、`dns_providers`），由导入方按目标环境重新指定。
+- **导入账户**（纯本地恢复，除 `verify` 外不与 CA 交互；不生成新密钥、不注册）：
+  ```sh
+  bao write acme/accounts/prod-import/import \
+    server_url="https://acme-v02.api.letsencrypt.org/directory" \
+    contact="ops@example.com" \
+    terms_of_service_agreed=true \
+    key_type=EC256 \
+    private_key_pem="$(bao read -field=private_key_pem acme/accounts/prod/export)" \
+    registration_json="$(bao read -field=registration_json acme/accounts/prod/export)"
+  ```
+  必填：`server_url`/`key_type`/`private_key_pem`/`registration_json`；
+  可选：`contact`/`terms_of_service_agreed`/`insecure_tls`/`dns_providers`/`overwrite`/`verify`。
+  - `verify=true`：先向 CA 用私钥反查账户，成功则以 CA 返回刷新 `registration_json`；
+    失败（私钥未在该 CA 注册或网络异常）直接报错且不落盘。
+  - 目标账户名已存在时须显式 `overwrite=true`，否则报错。
+  - 响应 `data` 含 `name`/`server_url`/`contact`/`key_type`/`verified`/`overwritten`。
 - **查看与清空证书缓存**：
   ```sh
   bao read acme/cache

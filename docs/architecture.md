@@ -11,13 +11,16 @@
   > **收益**：云厂商 API Token 轮换只需更新对应 KV 路径即可立即生效，无须更新插件配置或重启进程。
 
 - **灵活的字段映射（显式 keys + 同名回退）**：
-  如果 KV 中的 Key 名与 lego 预期的环境变量名不一致，可通过 `keys` 参数指定映射：
+  如果 KV 中的 Key 名与 lego 预期的环境变量名不一致，可通过 `credentials_keys` 指定映射（JSON 对象字符串，键为 lego 环境变量名，值为用户 KV 中的键名）：
   ```sh
   bao write acme/dns-providers/cloudflare-primary \
     type=cloudflare \
-    credentials_ref='mount=secret,path=dns/cloudflare,kv_version=2,keys={CLOUDFLARE_DNS_API_TOKEN:cf_token}'
+    credentials_mount=secret \
+    credentials_path=dns/cloudflare \
+    credentials_kv_version=2 \
+    credentials_keys='{"CLOUDFLARE_DNS_API_TOKEN":"cf_token"}'
   ```
-  映射逻辑：先在 `keys` 字典中寻找匹配的目标 Key，如果未声明则在 KV 数据中回退查找与 lego 环境变量**同名**的 Key。支持 KVv1 和 KVv2（默认版本为 2），亦可通过 `version` 参数锁定指定历史版本。
+  映射逻辑：先在 `credentials_keys` 中寻找匹配的目标 Key，如果未声明则在 KV 数据中回退查找与 lego 环境变量**同名**的 Key。支持 KVv1 和 KVv2（默认版本为 2），亦可通过 `credentials_version` 参数锁定指定历史版本（`0` 表示最新）。
 
 - **Fail-fast 校验**：
   在写入 `dns-providers` 时，插件会立即发起试读并尝试初始化 Provider 配置；若配置缺失或格式非法，立即报错拒绝写入。凭据仅存在于一次签发请求的内存生命周期内，不写入磁盘、不打入日志、不在 API 返回。
