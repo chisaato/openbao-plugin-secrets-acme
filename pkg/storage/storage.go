@@ -118,6 +118,13 @@ type CacheEntry struct {
 	// OutputKVStatus：投影状态 written/skipped_conflict/skipped_error；空=未配置
 	// 同步或旧条目（零值回退）。
 	OutputKVStatus string `json:"output_kv_status,omitempty"`
+	// OutputKVLinked：证书显式 link 标记。置位时续签/rename 的 writeCertOutput
+	// 以条目记录的 Mount/Path 为准；未置位时维持现状跟随 role 配置。不能裸用
+	// OutputKVMount 区分，因为它同时是"最后成功写入位置"（撤销清理依赖）。
+	OutputKVLinked bool `json:"output_kv_linked,omitempty"`
+	// OutputKVPathOverride：link 指定的 KV 数据路径（mount 内路径段）。空=派生
+	// certs/{certID}。
+	OutputKVPathOverride string `json:"output_kv_path_override,omitempty"`
 }
 
 // --- Account CRUD ---

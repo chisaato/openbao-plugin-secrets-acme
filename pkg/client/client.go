@@ -228,6 +228,71 @@ func (c *Client) RenameAccount(ctx context.Context, oldName, newName string) (*a
 	return res, nil
 }
 
+// ExportAccount 导出账户跨实例复用所需的最小集合（私钥 + 注册信息 + CA 目录）。
+func (c *Client) ExportAccount(ctx context.Context, name string) (*api.AccountExport, error) {
+	sec, err := c.bao.Logical().ReadWithContext(ctx, c.p("accounts/"+name+"/export"))
+	if err != nil {
+		return nil, err
+	}
+	if sec == nil || sec.Data == nil {
+		return nil, fmt.Errorf("account %q not found", name)
+	}
+	res := &api.AccountExport{Name: name}
+	if err := decodeData(sec.Data, res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// ImportAccount 从导出载荷恢复账户。providers 非空时同时绑定 DNS Provider 引用。
+func (c *Client) ImportAccount(ctx context.Context, name string, e *api.AccountExport, opts api.AccountImportOptions, providers []api.DNSProviderRef) (*api.AccountImportResult, error) {
+	data := map[string]any{
+		"terms_of_service_agreed": e.TOSAgreed,
+		"insecure_tls":            opts.InsecureTLS,
+		"overwrite":               opts.Overwrite,
+		"verify":                  opts.Verify,
+	}
+	// 字符串字段仅在非空时放入，避免以空串覆盖插件侧语义。
+	if e.ServerURL != "" {
+		data["server_url"] = e.ServerURL
+	}
+	if e.Contact != "" {
+		data["contact"] = e.Contact
+	}
+	if e.KeyType != "" {
+		data["key_type"] = e.KeyType
+	}
+	if e.PrivateKeyPEM != "" {
+		data["private_key_pem"] = e.PrivateKeyPEM
+	}
+	if e.RegistrationJSON != "" {
+		data["registration_json"] = e.RegistrationJSON
+	}
+	if len(providers) > 0 {
+		var refs []map[string]any
+		for _, p := range providers {
+			m := map[string]any{"name": p.Name}
+			if len(p.Zones) > 0 {
+				m["zones"] = p.Zones
+			}
+			refs = append(refs, m)
+		}
+		data["dns_providers"] = refs
+	}
+
+	sec, err := c.bao.Logical().WriteWithContext(ctx, c.p("accounts/"+name+"/import"), data)
+	if err != nil {
+		return nil, err
+	}
+	res := &api.AccountImportResult{Name: name}
+	if sec != nil && sec.Data != nil {
+		if err := decodeData(sec.Data, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
 // ---- DNS Providers ----
 
 func (c *Client) SetDNSProvider(ctx context.Context, name string, p api.DNSProvider) error {
@@ -533,6 +598,64 @@ func (c *Client) RenewCert(ctx context.Context, role, cn string, sync bool) (*ap
 	res := &api.IssueResponse{}
 	if err := decodeData(sec.Data, res); err != nil {
 		return nil, err
+	}
+	return res, nil
+}
+
+// KVSyncCert 手动触发一次证书的 KV 投影拷贝。force=true 时跳过占用检查覆盖。
+func (c *Client) KVSyncCert(ctx context.Context, role, cn string, force bool) (*api.CertKVSyncResponse, error) {
+	sec, err := c.bao.Logical().WriteWithContext(ctx, c.p("certs/"+role+"/"+cn+"/kv/sync"), map[string]any{
+		"force": force,
+	})
+	if err != nil {
+		return nil, err
+	}
+	res := &api.CertKVSyncResponse{}
+	if sec != nil && sec.Data != nil {
+		if err := decodeData(sec.Data, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+// KVLinkCert 绑定证书的 KV 输出位置并立即同步一次。mount/path 仅在非空时写入
+// 请求体：空 mount 交由后端缺省回退 role 配置，空 path 交由后端按 certs/{certID}
+// 派生，避免以空串覆盖已有语义。
+func (c *Client) KVLinkCert(ctx context.Context, role, cn, mount, path string, force bool) (*api.CertKVSyncResponse, error) {
+	data := map[string]any{"force": force}
+	if mount != "" {
+		data["mount"] = mount
+	}
+	if path != "" {
+		data["path"] = path
+	}
+	sec, err := c.bao.Logical().WriteWithContext(ctx, c.p("certs/"+role+"/"+cn+"/kv/link"), data)
+	if err != nil {
+		return nil, err
+	}
+	res := &api.CertKVSyncResponse{}
+	if sec != nil && sec.Data != nil {
+		if err := decodeData(sec.Data, res); err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+// KVUnlinkCert 解除证书的 KV 输出绑定；deleteKV=true 时同时删除已投影的 KV 数据。
+func (c *Client) KVUnlinkCert(ctx context.Context, role, cn string, deleteKV bool) (*api.CertKVUnlinkResponse, error) {
+	sec, err := c.bao.Logical().WriteWithContext(ctx, c.p("certs/"+role+"/"+cn+"/kv/unlink"), map[string]any{
+		"delete_kv": deleteKV,
+	})
+	if err != nil {
+		return nil, err
+	}
+	res := &api.CertKVUnlinkResponse{}
+	if sec != nil && sec.Data != nil {
+		if err := decodeData(sec.Data, res); err != nil {
+			return nil, err
+		}
 	}
 	return res, nil
 }

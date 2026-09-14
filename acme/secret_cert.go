@@ -191,7 +191,7 @@ func (b *backend) certRevoke(ctx context.Context, req *logical.Request, d *frame
 			}
 		}
 		if mount != "" {
-			_ = b.deleteCertOutput(ctx, req.ClientToken, mount, key)
+			_ = b.deleteCertOutput(ctx, req.ClientToken, mount, key, entry)
 		}
 	}
 	return nil, nil

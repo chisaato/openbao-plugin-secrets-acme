@@ -46,6 +46,48 @@ type AccountRenameResult struct {
 	Warnings      []string `json:"warnings,omitempty" mapstructure:"warnings"`
 }
 
+// 账户导出文件标识。导入端按 Kind/Version 校验载荷。
+const (
+	AccountExportKind    = "openbao-acme-account-export"
+	AccountExportVersion = 1
+)
+
+// AccountExport 是 accounts/{name}/export 的响应实体，同时是 import 的载荷格式。
+// 只包含跨实例复用同一 ACME 账户所需的最小充分集合：账户身份 = 私钥 + 账户 URI
+// （在 RegistrationJSON 内）+ 所属 CA 目录。不含插件内部引用（dns_providers）与
+// 端点本地配置（insecure_tls），这两项由导入方按目标环境重新指定。
+type AccountExport struct {
+	Kind             string `json:"kind" mapstructure:"kind"`
+	Version          int    `json:"version" mapstructure:"version"`
+	Name             string `json:"name,omitempty" mapstructure:"name"` // 导出时的账户名，仅供参考
+	ServerURL        string `json:"server_url" mapstructure:"server_url"`
+	Contact          string `json:"contact" mapstructure:"contact"`
+	TOSAgreed        bool   `json:"terms_of_service_agreed" mapstructure:"terms_of_service_agreed"`
+	KeyType          string `json:"key_type" mapstructure:"key_type"`
+	PrivateKeyPEM    string `json:"private_key_pem" mapstructure:"private_key_pem"`
+	RegistrationJSON string `json:"registration_json" mapstructure:"registration_json"`
+}
+
+// AccountImportOptions 是 accounts/{name}/import 的可选行为开关。
+type AccountImportOptions struct {
+	// Overwrite：目标账户名已存在时允许整体覆盖。
+	Overwrite bool `json:"overwrite" mapstructure:"overwrite"`
+	// Verify：导入前向 CA ResolveAccountByKey 验证私钥确已注册并刷新注册信息。
+	Verify bool `json:"verify" mapstructure:"verify"`
+	// InsecureTLS：目标端点本地 TLS 校验开关（不随载荷走）。
+	InsecureTLS bool `json:"insecure_tls" mapstructure:"insecure_tls"`
+}
+
+// AccountImportResult 是 accounts/{name}/import 的响应实体。
+type AccountImportResult struct {
+	Name        string `json:"name" mapstructure:"name"`
+	ServerURL   string `json:"server_url" mapstructure:"server_url"`
+	Contact     string `json:"contact" mapstructure:"contact"`
+	KeyType     string `json:"key_type" mapstructure:"key_type"`
+	Verified    bool   `json:"verified" mapstructure:"verified"`
+	Overwritten bool   `json:"overwritten" mapstructure:"overwritten"`
+}
+
 // RoleRenameResult 是 roles/{name}/rename 的响应实体。
 type RoleRenameResult struct {
 	OldName       string `json:"old_name" mapstructure:"old_name"`
@@ -243,6 +285,19 @@ func (c *CertDetail) GetID() string {
 // GetShortID 返回 12 位的短 ID。
 func (c *CertDetail) GetShortID() string {
 	return ShortID(c.GetID())
+}
+
+// CertKVSyncResponse 是 certs/{role}/{cn}/kv/sync 与 .../kv/link 的响应实体。
+type CertKVSyncResponse struct {
+	OutputKVStatus string `json:"output_kv_status,omitempty" mapstructure:"output_kv_status"`
+	OutputKVMount  string `json:"output_kv_mount,omitempty" mapstructure:"output_kv_mount"`
+	OutputKVPath   string `json:"output_kv_path,omitempty" mapstructure:"output_kv_path"`
+}
+
+// CertKVUnlinkResponse 是 certs/{role}/{cn}/kv/unlink 的响应实体。
+type CertKVUnlinkResponse struct {
+	Unlinked  bool `json:"unlinked" mapstructure:"unlinked"`
+	KVDeleted bool `json:"kv_deleted" mapstructure:"kv_deleted"`
 }
 
 // PruneJobOptions 定义清理 Job 的过滤条件。

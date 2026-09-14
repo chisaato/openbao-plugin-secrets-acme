@@ -3,13 +3,45 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/api"
+	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/client"
 	"github.com/spf13/cobra"
 )
+
+// resolveCertRoleCN 解析 `<cert_id | role cn>` 双形态寻址为 role/cn：
+// 单参数视为 Cert ID/短前缀，取回详情后以其 Role/CommonName 作为 role/cn；
+// 双参数直接使用。单参数路径的 GetCertByID 错误原样返回（保留证书不存在等语义）。
+func resolveCertRoleCN(ctx context.Context, cli *client.Client, args []string) (string, string, error) {
+	if len(args) == 2 {
+		return args[0], args[1], nil
+	}
+	detail, err := cli.GetCertByID(ctx, args[0])
+	if err != nil {
+		return "", "", err
+	}
+	return detail.Role, detail.CommonName, nil
+}
+
+// printKVFields 以与 cert get 一致的风格打印 KV 投影字段，空值显示 "-"。
+func printKVFields(out io.Writer, status, mount, path string) {
+	if status == "" {
+		status = "-"
+	}
+	if mount == "" {
+		mount = "-"
+	}
+	if path == "" {
+		path = "-"
+	}
+	fmt.Fprintf(out, "KV Status:  %s\n", status)
+	fmt.Fprintf(out, "KV Mount:   %s\n", mount)
+	fmt.Fprintf(out, "KV Path:    %s\n", path)
+}
 
 func NewCertCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -368,6 +400,102 @@ func NewCertCmd() *cobra.Command {
 	}
 	renewCmd.Flags().BoolVar(&renewSync, "sync", false, "强制使用同步阻塞续签")
 
-	cmd.AddCommand(issueCmd, listCmd, getCmd, revokeCmd, renewCmd)
+	// ---- 5. cert kv-sync ----
+	var kvSyncForce bool
+	kvSyncCmd := &cobra.Command{
+		Use:   "kv-sync <cert_id | role cn>",
+		Short: "手动触发一次证书的 KV 投影拷贝 (支持传单个 Cert ID 或传 role cn)",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := GetClient()
+			if err != nil {
+				return err
+			}
+			role, cn, err := resolveCertRoleCN(cmd.Context(), cli, args)
+			if err != nil {
+				return err
+			}
+			res, err := cli.KVSyncCert(cmd.Context(), role, cn, kvSyncForce)
+			if err != nil {
+				return fmt.Errorf("KV 同步失败: %w", err)
+			}
+			if FlagFormat == "json" {
+				PrintOutput(res)
+				return nil
+			}
+			printKVFields(cmd.OutOrStdout(), res.OutputKVStatus, res.OutputKVMount, res.OutputKVPath)
+			return nil
+		},
+	}
+	kvSyncCmd.Flags().BoolVar(&kvSyncForce, "force", false, "强制覆盖：跳过 KV 占用检查直接写入")
+
+	// ---- 6. cert kv-link ----
+	var (
+		kvLinkMount string
+		kvLinkPath  string
+		kvLinkForce bool
+	)
+	kvLinkCmd := &cobra.Command{
+		Use:   "kv-link <cert_id | role cn>",
+		Short: "绑定证书的 KV 输出位置并立即同步一次 (支持传单个 Cert ID 或传 role cn)",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := GetClient()
+			if err != nil {
+				return err
+			}
+			role, cn, err := resolveCertRoleCN(cmd.Context(), cli, args)
+			if err != nil {
+				return err
+			}
+			res, err := cli.KVLinkCert(cmd.Context(), role, cn, kvLinkMount, kvLinkPath, kvLinkForce)
+			if err != nil {
+				return fmt.Errorf("KV 绑定失败: %w", err)
+			}
+			if FlagFormat == "json" {
+				PrintOutput(res)
+				return nil
+			}
+			printKVFields(cmd.OutOrStdout(), res.OutputKVStatus, res.OutputKVMount, res.OutputKVPath)
+			return nil
+		},
+	}
+	// 命名 --kv-mount 而非 --mount：避免遮蔽根命令的插件挂载路径 flag（--mount）。
+	kvLinkCmd.Flags().StringVar(&kvLinkMount, "kv-mount", "", "KV mount；缺省取 role 的 output_kv_mount")
+	kvLinkCmd.Flags().StringVar(&kvLinkPath, "path", "", "mount 内的数据路径 override；空=派生 certs/{certID}")
+	kvLinkCmd.Flags().BoolVar(&kvLinkForce, "force", false, "强制覆盖：跳过 KV 占用检查直接写入")
+
+	// ---- 7. cert kv-unlink ----
+	var kvUnlinkDeleteKV bool
+	kvUnlinkCmd := &cobra.Command{
+		Use:   "kv-unlink <cert_id | role cn>",
+		Short: "解除证书的 KV 输出绑定 (支持传单个 Cert ID 或传 role cn)",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := GetClient()
+			if err != nil {
+				return err
+			}
+			role, cn, err := resolveCertRoleCN(cmd.Context(), cli, args)
+			if err != nil {
+				return err
+			}
+			res, err := cli.KVUnlinkCert(cmd.Context(), role, cn, kvUnlinkDeleteKV)
+			if err != nil {
+				return fmt.Errorf("KV 解绑失败: %w", err)
+			}
+			if FlagFormat == "json" {
+				PrintOutput(res)
+				return nil
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Unlinked:   %v\n", res.Unlinked)
+			fmt.Fprintf(out, "KV Deleted: %v\n", res.KVDeleted)
+			return nil
+		},
+	}
+	kvUnlinkCmd.Flags().BoolVar(&kvUnlinkDeleteKV, "delete-kv", false, "同时删除已投影的 KV 数据")
+
+	cmd.AddCommand(issueCmd, listCmd, getCmd, revokeCmd, renewCmd, kvSyncCmd, kvLinkCmd, kvUnlinkCmd)
 	return cmd
 }

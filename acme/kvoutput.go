@@ -134,22 +134,43 @@ func buildFullChain(certPEM, issuerPEM string) string {
 	return certTrimmed + "\n\n" + issuerTrimmed
 }
 
-// writeCertOutput：未配置 OutputKVMount 时 no-op；否则写证书并返回写入的 KV path。
+// effectiveOutputKVMount：投影生效 mount。证书显式 link 且条目记录了 mount 时
+// 以条目为准（续签/rename 沿用 link 绑定位置），否则跟随 role 配置。
+func effectiveOutputKVMount(role *roleEntry, entry *cacheEntry) string {
+	if entry != nil && entry.OutputKVLinked && entry.OutputKVMount != "" {
+		return entry.OutputKVMount
+	}
+	if role != nil {
+		return role.OutputKVMount
+	}
+	return ""
+}
+
+// writeCertOutput：role 未配置 OutputKVMount 且条目未 link 时 no-op；否则写证书
+// 并返回写入的 KV 相对 path（mount 内路径段）。
 //
 // 投影/冲突语义：KV 是投影、ACME 是事实源。写入前按 policy 检查目标路径占用——
 // 空路径、或现存数据 cert_id 与本次一致（自己的旧版本）允许写；被其他证书或
 // 外来数据占用时按 policy 拒绝/跳过。
 //
+// link 语义：entry.OutputKVLinked 置位时以条目记录的 Mount/PathOverride 为准
+// （link 建立的绑定位置），续签/rename 因此不会漂回 role 配置；未置位时维持
+// 跟随 role.OutputKVMount 的历史行为。
+//
 // 本函数会就地更新 entry 的投影字段（OutputKVMount/OutputKVPath/OutputKVStatus），
 // 调用方负责持久化（cacheUpdate）。BestEffort 跳过时 Mount/Path 保持上次成功值——
 // 它们是"最后成功写入位置"，撤销清理语义依赖 Mount。
 func (b *backend) writeCertOutput(ctx context.Context, req *logical.Request, roleName string, role *roleEntry, certID string, entry *cacheEntry, policy kvWritePolicy) (string, error) {
-	if role.OutputKVMount == "" {
+	mount := effectiveOutputKVMount(role, entry)
+	if mount == "" {
 		return "", nil
 	}
 	path := outputKVPath(certID)
+	if entry.OutputKVPathOverride != "" {
+		path = entry.OutputKVPathOverride
+	}
 	if policy != kvPolicyOverwrite {
-		existing, err := b.kvWriter.Read(ctx, req.ClientToken, role.OutputKVMount, path)
+		existing, err := b.kvWriter.Read(ctx, req.ClientToken, mount, path)
 		if err != nil {
 			// 读取失败无法判定占用：Enforce 保守拒绝，BestEffort 跳过写继续。
 			if policy == kvPolicyBestEffort {
@@ -199,7 +220,7 @@ func (b *backend) writeCertOutput(ctx context.Context, req *logical.Request, rol
 		"role":        roleName,
 		"account":     entry.Account,
 	}
-	if entry.Account == "" {
+	if entry.Account == "" && role != nil {
 		data["account"] = role.Account
 	}
 
@@ -210,21 +231,26 @@ func (b *backend) writeCertOutput(ctx context.Context, req *logical.Request, rol
 			data["not_after"] = cert.NotAfter.UTC().Format(time.RFC3339)
 		}
 	}
-	if err := b.kvWriter.Write(ctx, req.ClientToken, role.OutputKVMount, path, data); err != nil {
+	if err := b.kvWriter.Write(ctx, req.ClientToken, mount, path, data); err != nil {
 		return "", err
 	}
 	entry.OutputKVStatus = pluginapi.KVStatusWritten
-	entry.OutputKVMount = role.OutputKVMount
-	// 记录完整输出路径：mount + "/" + certs/{certID}（certID 即本次 path 的末段）。
-	entry.OutputKVPath = role.OutputKVMount + "/" + path
+	entry.OutputKVMount = mount
+	// 记录完整输出路径：mount + "/" + 生效路径。
+	entry.OutputKVPath = mount + "/" + path
 	return path, nil
 }
 
 // deleteCertOutput：从 KV 中删除证书条目（如撤销或引用归零时）。
-func (b *backend) deleteCertOutput(ctx context.Context, clientToken, mount, certID string) error {
+// entry 非空且记录了 OutputKVPathOverride 时按 override 路径删除，否则派生
+// certs/{certID}；rename 迁移等无 entry 场景传 nil 保持派生行为。
+func (b *backend) deleteCertOutput(ctx context.Context, clientToken, mount, certID string, entry *cacheEntry) error {
 	if mount == "" || certID == "" {
 		return nil
 	}
 	path := outputKVPath(certID)
+	if entry != nil && entry.OutputKVPathOverride != "" {
+		path = entry.OutputKVPathOverride
+	}
 	return b.kvWriter.Delete(ctx, clientToken, mount, path)
 }

@@ -363,6 +363,10 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 		entry.OutputKVMount = prev.OutputKVMount
 		entry.OutputKVPath = prev.OutputKVPath
 		entry.OutputKVStatus = prev.OutputKVStatus
+		// link 绑定须随续签/重签继承：置位时 writeCertOutput 以条目的
+		// Mount/PathOverride 为准，而非漂回 role 配置。
+		entry.OutputKVLinked = prev.OutputKVLinked
+		entry.OutputKVPathOverride = prev.OutputKVPathOverride
 	}
 	if !role.DisableCache {
 		// disable_cache：纯直通不落缓存（也无引用计数）——否则同 key 二次
@@ -378,12 +382,16 @@ func (b *backend) doIssue(ctx context.Context, req *logical.Request, roleName st
 		return nil, err
 	}
 	// writeCertOutput 会就地更新 entry 的投影字段，但 cachePut 已在此前完成，
-	// 需在单写临界区内把三字段同步进存储条目。KV 硬失败路径（cacheDelete）不走此处。
-	if !role.DisableCache && role.OutputKVMount != "" {
+	// 需在单写临界区内把投影字段同步进存储条目。link 生效时 role 可能未配
+	// output_kv_mount，故条件同时覆盖 entry.OutputKVLinked。KV 硬失败路径
+	// （cacheDelete）不走此处。
+	if !role.DisableCache && (role.OutputKVMount != "" || entry.OutputKVLinked) {
 		if uerr := b.cacheUpdate(ctx, req.Storage, key, func(e *cacheEntry) *cacheEntry {
 			e.OutputKVMount = entry.OutputKVMount
 			e.OutputKVPath = entry.OutputKVPath
 			e.OutputKVStatus = entry.OutputKVStatus
+			e.OutputKVLinked = entry.OutputKVLinked
+			e.OutputKVPathOverride = entry.OutputKVPathOverride
 			return e
 		}); uerr != nil {
 			return nil, uerr

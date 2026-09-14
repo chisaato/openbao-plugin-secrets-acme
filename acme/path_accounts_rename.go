@@ -183,7 +183,7 @@ func (b *backend) pathAccountRename(ctx context.Context, req *logical.Request, d
 			warnings = append(warnings, fmt.Sprintf("KV 输出迁移失败 %s -> %s: %v", m.oldKey, m.newKey, err))
 			continue
 		}
-		if err := b.deleteCertOutput(ctx, req.ClientToken, role.OutputKVMount, m.oldKey); err != nil {
+		if err := b.deleteCertOutput(ctx, req.ClientToken, role.OutputKVMount, m.oldKey, m.entry); err != nil {
 			warnings = append(warnings, fmt.Sprintf("KV 旧输出删除失败 %s -> %s: %v", m.oldKey, m.newKey, err))
 		}
 	}

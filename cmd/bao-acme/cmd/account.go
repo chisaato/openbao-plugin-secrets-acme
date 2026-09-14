@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/api"
@@ -176,6 +178,118 @@ func NewAccountCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(regCmd, getCmd, listCmd, deactCmd, renameCmd)
+	var (
+		exportOut string
+	)
+	exportCmd := &cobra.Command{
+		Use:   "export <name>",
+		Short: "导出账户（含私钥，可跨实例复用）",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			cli, err := GetClient()
+			if err != nil {
+				return err
+			}
+			exp, err := cli.ExportAccount(cmd.Context(), name)
+			if err != nil {
+				return fmt.Errorf("导出账户失败: %w", err)
+			}
+			b, err := json.MarshalIndent(exp, "", "  ")
+			if err != nil {
+				return fmt.Errorf("序列化导出内容失败: %w", err)
+			}
+			b = append(b, '\n')
+			if exportOut == "" {
+				// 未指定输出文件时直接打印到标准输出
+				_, err = cmd.OutOrStdout().Write(b)
+				return err
+			}
+			// 含私钥，权限收紧为 0600
+			if err := os.WriteFile(exportOut, b, 0o600); err != nil {
+				return fmt.Errorf("写入导出文件失败: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "账户 %q 已导出到 %s（含私钥，请妥善保管）\n", name, exportOut)
+			return nil
+		},
+	}
+	exportCmd.Flags().StringVarP(&exportOut, "out", "o", "", "导出文件路径（省略则打印到标准输出）")
+
+	var (
+		importFile  string
+		overwrite   bool
+		verify      bool
+		impInsecTLS bool
+		impProvider []string
+	)
+	importCmd := &cobra.Command{
+		Use:   "import <name>",
+		Short: "从导出文件导入账户",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			raw, err := os.ReadFile(importFile)
+			if err != nil {
+				return fmt.Errorf("读取导入文件失败: %w", err)
+			}
+			var exp api.AccountExport
+			if err := json.Unmarshal(raw, &exp); err != nil {
+				return fmt.Errorf("解析导入文件失败: %w", err)
+			}
+			if exp.Kind != api.AccountExportKind {
+				return fmt.Errorf("不是有效的账户导出文件")
+			}
+			if exp.Version != api.AccountExportVersion {
+				return fmt.Errorf("导出文件版本过新，请升级 CLI")
+			}
+			if exp.Name != "" && exp.Name != name {
+				fmt.Fprintf(cmd.OutOrStdout(), "源账户名 %q，将导入为 %q\n", exp.Name, name)
+			}
+
+			cli, err := GetClient()
+			if err != nil {
+				return err
+			}
+			// 复用 register 的 'name[:zone1,zone2]' 解析逻辑
+			var pRefs []api.DNSProviderRef
+			for _, p := range impProvider {
+				parts := strings.SplitN(p, ":", 2)
+				ref := api.DNSProviderRef{Name: parts[0]}
+				if len(parts) > 1 && parts[1] != "" {
+					ref.Zones = strings.Split(parts[1], ",")
+				}
+				pRefs = append(pRefs, ref)
+			}
+			res, err := cli.ImportAccount(cmd.Context(), name, &exp, api.AccountImportOptions{
+				Overwrite:   overwrite,
+				Verify:      verify,
+				InsecureTLS: impInsecTLS,
+			}, pRefs)
+			if err != nil {
+				return fmt.Errorf("导入账户失败: %w", err)
+			}
+			if FlagFormat == "json" {
+				PrintOutput(res)
+				return nil
+			}
+			msg := fmt.Sprintf("账户 %q 已导入 (CA: %s)", name, res.ServerURL)
+			if verify {
+				msg += " 已向 CA 验证"
+			}
+			if overwrite {
+				msg += "（覆盖已有账户）"
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), msg)
+			return nil
+		},
+	}
+	importCmd.Flags().StringVar(&importFile, "file", "", "导出文件路径 (必填)")
+	importCmd.Flags().BoolVar(&overwrite, "overwrite", false, "目标账户名已存在时允许覆盖")
+	importCmd.Flags().BoolVar(&verify, "verify", false, "导入前向 CA 验证私钥并刷新注册信息")
+	importCmd.Flags().BoolVar(&impInsecTLS, "insecure-tls", false, "跳过 CA TLS 证书校验 (测试用)")
+	importCmd.Flags().StringSliceVar(&impProvider, "provider", nil, "导入时绑定 DNS Provider，格式 'name' 或 'name:zone1,zone2'")
+	_ = importCmd.MarkFlagRequired("file")
+
+	cmd.AddCommand(regCmd, getCmd, listCmd, deactCmd, renameCmd, exportCmd, importCmd)
 	return cmd
 }

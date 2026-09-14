@@ -166,6 +166,56 @@ bao-acme account deactivate le-staging
 bao-acme account rename le-staging le-staging-2026
 ```
 
+#### `account export <name>`
+
+导出账户跨实例复用所需的最小集合：**账户私钥 + 账户 URI（含在注册信息内）+ 所属 CA 目录**。
+该导出文件可直接在另一套 OpenBao 上用 `account import` 恢复出**同一个 ACME 账户**，无需向 CA
+重复注册（LE 对同一账户 key 的重复注册会返回已有账户 URI，跨实例复用可避免触发新注册速率限制）。
+
+> ⚠️ **导出文件包含账户私钥**，等于账户的身份凭证，请妥善保管；CLI 落盘时已强制使用 `0600` 权限。
+
+| 参数        | 类型   | 说明                                                     |
+| ----------- | ------ | -------------------------------------------------------- |
+| `-o, --out` | string | 输出文件路径。省略时直接将缩进 JSON 打印到标准输出        |
+
+```bash
+# 导出到文件（推荐，文件权限自动为 0600）
+bao-acme account export le-staging -o le-staging.account.json
+
+# 直接输出到终端，配合管道或重定向使用
+bao-acme account export le-staging > le-staging.account.json
+```
+
+#### `account import <name>`
+
+从导出文件恢复账户。默认行为为**纯本地恢复**（不与 CA 交互）；指定 `--verify` 时会先向 CA
+反查该私钥是否确已注册，并刷新本地的注册信息（账户 URI 等）。导入本身不绑定 DNS Provider，
+恢复后可再用 `account register <name> --provider ...` 更新补绑。
+
+| 参数            | 类型        | 说明                                                                     |
+| --------------- | ----------- | ------------------------------------------------------------------------ |
+| `--file`        | string      | 导出文件路径（必填）                                                     |
+| `--overwrite`   | bool        | 目标账户名已存在时允许整体覆盖（默认 `false`，冲突时报错）               |
+| `--verify`      | bool        | 导入前向 CA 反查验证私钥并刷新注册信息                                   |
+| `--insecure-tls`| bool        | 跳过 CA TLS 证书校验（仅测试环境使用，属目标端点本地配置，不随载荷走）   |
+| `--provider`    | StringSlice | 导入时顺带绑定 DNS Provider，格式同 `register`：`name` 或 `name:zone1,zone2` |
+
+> 注：`--file` 未提供 `-f` 简写，因为全局持久 Flag `-f, --format` 已占用该简写。
+
+```bash
+# 示例：在另一实例上恢复账户（目标名可与源名不同）
+bao-acme account import le-staging --file le-staging.account.json
+
+# 目标名已存在时覆盖，并向 CA 验证私钥
+bao-acme account import le-staging --file le-staging.account.json --overwrite --verify
+
+# 恢复后补绑 DNS Provider
+bao-acme account register le-staging \
+  --server-url https://acme-v02.api.letsencrypt.org/directory \
+  --contact mailto:ops@example.com \
+  --provider my-cf
+```
+
 ---
 
 ### 2.3 Role 策略管理 (`bao-acme role`)

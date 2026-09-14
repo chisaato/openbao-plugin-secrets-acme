@@ -111,7 +111,10 @@ func pathAccounts(b *backend) []*framework.Path {
 			},
 		},
 	}
-	return []*framework.Path{entry, list, rollover, rename, keyExport}
+	paths := []*framework.Path{entry, list, rollover, rename, keyExport}
+	// 账户导出/导入子路径（见 path_accounts_export.go）。
+	paths = append(paths, pathAccountsExport(b)...)
+	return paths
 }
 
 func (b *backend) pathAccountWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {

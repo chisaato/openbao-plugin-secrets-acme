@@ -2,6 +2,7 @@ package acme
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -62,7 +63,66 @@ func pathCertsExtended(b *backend) []*framework.Path {
 				},
 			},
 		},
-		// 4. GET/DELETE certs/id/{id} (直接通过 Cert ID / CacheKey 检索，毫无歧义)
+		// 4. POST certs/{role}/{cn}/kv/sync：手动触发一次 KV 投影拷贝
+		{
+			Pattern: "certs/" + framework.GenericNameRegex("role") + "/" + framework.MatchAllRegex("cn") + "/kv/sync$",
+			Fields: map[string]*framework.FieldSchema{
+				"role":  {Type: framework.TypeString, Description: "Role 名称"},
+				"cn":    {Type: framework.TypeString, Description: "证书 CommonName 或主域名"},
+				"force": {Type: framework.TypeBool, Description: "强制覆盖：跳过 KV 占用检查直接写入"},
+			},
+			Operations: map[logical.Operation]framework.OperationHandler{
+				logical.CreateOperation: &framework.PathOperation{
+					Summary:  "手动触发一次证书 KV 投影拷贝",
+					Callback: b.pathCertKVSync,
+				},
+				logical.UpdateOperation: &framework.PathOperation{
+					Summary:  "手动触发一次证书 KV 投影拷贝",
+					Callback: b.pathCertKVSync,
+				},
+			},
+		},
+		// 5. POST certs/{role}/{cn}/kv/link：建立/覆盖绑定并立即 sync 一次
+		{
+			Pattern: "certs/" + framework.GenericNameRegex("role") + "/" + framework.MatchAllRegex("cn") + "/kv/link$",
+			Fields: map[string]*framework.FieldSchema{
+				"role":  {Type: framework.TypeString, Description: "Role 名称"},
+				"cn":    {Type: framework.TypeString, Description: "证书 CommonName 或主域名"},
+				"mount": {Type: framework.TypeString, Description: "KV mount；缺省取 role 的 output_kv_mount"},
+				"path":  {Type: framework.TypeString, Description: "mount 内的数据路径 override；空=派生 certs/{certID}"},
+				"force": {Type: framework.TypeBool, Description: "强制覆盖：跳过 KV 占用检查直接写入"},
+			},
+			Operations: map[logical.Operation]framework.OperationHandler{
+				logical.CreateOperation: &framework.PathOperation{
+					Summary:  "绑定证书 KV 输出位置并立即同步一次",
+					Callback: b.pathCertKVLink,
+				},
+				logical.UpdateOperation: &framework.PathOperation{
+					Summary:  "绑定证书 KV 输出位置并立即同步一次",
+					Callback: b.pathCertKVLink,
+				},
+			},
+		},
+		// 6. POST certs/{role}/{cn}/kv/unlink：解除绑定（可选删除已投影数据）
+		{
+			Pattern: "certs/" + framework.GenericNameRegex("role") + "/" + framework.MatchAllRegex("cn") + "/kv/unlink$",
+			Fields: map[string]*framework.FieldSchema{
+				"role":      {Type: framework.TypeString, Description: "Role 名称"},
+				"cn":        {Type: framework.TypeString, Description: "证书 CommonName 或主域名"},
+				"delete_kv": {Type: framework.TypeBool, Description: "是否删除已投影的 KV 数据"},
+			},
+			Operations: map[logical.Operation]framework.OperationHandler{
+				logical.CreateOperation: &framework.PathOperation{
+					Summary:  "解除证书 KV 输出绑定",
+					Callback: b.pathCertKVUnlink,
+				},
+				logical.UpdateOperation: &framework.PathOperation{
+					Summary:  "解除证书 KV 输出绑定",
+					Callback: b.pathCertKVUnlink,
+				},
+			},
+		},
+		// 7. GET/DELETE certs/id/{id} (直接通过 Cert ID / CacheKey 检索，毫无歧义)
 		{
 			Pattern: "certs/id/" + framework.GenericNameRegex("id") + "$",
 			Fields: map[string]*framework.FieldSchema{
@@ -417,7 +477,7 @@ func (b *backend) pathCertRevokeByID(ctx context.Context, req *logical.Request, 
 
 	// 3. 联动清理 KV 证书输出（尽力而为）：优先条目记录的最后成功写入位置。
 	if mount := b.resolveOutputKVMount(ctx, req.Storage, entry); mount != "" {
-		_ = b.deleteCertOutput(ctx, req.ClientToken, mount, certID)
+		_ = b.deleteCertOutput(ctx, req.ClientToken, mount, certID, entry)
 	}
 
 	return &logical.Response{
@@ -458,7 +518,7 @@ func (b *backend) pathCertRevoke(ctx context.Context, req *logical.Request, d *f
 
 	// 3. 联动清理 KV 证书输出（尽力而为）：优先条目记录的最后成功写入位置。
 	if mount := b.resolveOutputKVMount(ctx, req.Storage, entry); mount != "" {
-		_ = b.deleteCertOutput(ctx, req.ClientToken, mount, key)
+		_ = b.deleteCertOutput(ctx, req.ClientToken, mount, key, entry)
 	}
 
 	return &logical.Response{
@@ -516,4 +576,178 @@ func (b *backend) pathCertRenewExplicit(ctx context.Context, req *logical.Reques
 		return nil, fmt.Errorf("续订内部错误")
 	}
 	return resp, nil
+}
+
+// kvWriteErrorResponse：把 writeCertOutput 的错误按仓库既有样式包装为错误响应，
+// 冲突时提示 force 覆盖。
+func kvWriteErrorResponse(action string, err error) *logical.Response {
+	var conflict *kvConflictError
+	if errors.As(err, &conflict) {
+		return logical.ErrorResponse("%s被拒绝: %v（清理该 KV 条目，或使用 force=true 显式覆盖）", action, err)
+	}
+	return logical.ErrorResponse("%s失败: %v", action, err)
+}
+
+// validateKVPathOverride 校验 link 的 path override：空=派生（允许）；非空时
+// 不得以 "/" 开头结尾、不得含 ".." 段、不得含空路径段。
+func validateKVPathOverride(p string) error {
+	if p == "" {
+		return nil
+	}
+	if strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") {
+		return fmt.Errorf("path 不得以 \"/\" 开头或结尾")
+	}
+	for _, seg := range strings.Split(p, "/") {
+		switch seg {
+		case "..":
+			return fmt.Errorf("path 不得包含 \"..\" 段")
+		case "":
+			return fmt.Errorf("path 不得包含空路径段")
+		}
+	}
+	return nil
+}
+
+// pathCertKVSync：单次 KV 投影拷贝。role 未配 output_kv_mount 且证书未 link
+// 时报错；冲突默认 Enforce 拒绝，force=true 时 Overwrite。写入与条目持久化在同一
+// cacheUpdate 临界区内完成。响应复用 outputKVFields 展示投影字段。
+func (b *backend) pathCertKVSync(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	roleName := d.Get("role").(string)
+	cn := d.Get("cn").(string)
+	force := d.Get("force").(bool)
+
+	entry, key, err := b.findCertEntryByRoleCN(ctx, req.Storage, roleName, cn)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, nil // 404
+	}
+	role, err := b.getRole(ctx, req.Storage, roleName)
+	if err != nil {
+		return nil, err
+	}
+	if effectiveOutputKVMount(role, entry) == "" {
+		return logical.ErrorResponse("未配置 KV 输出：role 未设置 output_kv_mount 且证书未 link"), nil
+	}
+
+	policy := kvPolicyEnforce
+	if force {
+		policy = kvPolicyOverwrite
+	}
+
+	// writeCertOutput 失败时（Enforce 冲突/读失败/写失败）尚未就地改字段，
+	// 回调原样返回 e；错误在临界区外统一包装为错误响应。
+	var updated *cacheEntry
+	var writeErr error
+	if err := b.cacheUpdate(ctx, req.Storage, key, func(e *cacheEntry) *cacheEntry {
+		_, writeErr = b.writeCertOutput(ctx, req, roleName, role, key, e, policy)
+		updated = e
+		return e
+	}); err != nil {
+		return nil, err
+	}
+	if writeErr != nil {
+		return kvWriteErrorResponse("KV 同步", writeErr), nil
+	}
+	return &logical.Response{Data: outputKVFields(updated, key)}, nil
+}
+
+// pathCertKVLink：建立/覆盖绑定并立即 sync 一次。在 cacheUpdate 临界区内先写入
+// link 字段再调 writeCertOutput；失败时回滚三个绑定字段，维持 Mount/Path=
+// 最后成功写入位置不变式。mount 缺省取 role.OutputKVMount。
+func (b *backend) pathCertKVLink(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	roleName := d.Get("role").(string)
+	cn := d.Get("cn").(string)
+	mount := d.Get("mount").(string)
+	pathOverride := d.Get("path").(string)
+	force := d.Get("force").(bool)
+
+	entry, key, err := b.findCertEntryByRoleCN(ctx, req.Storage, roleName, cn)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, nil // 404
+	}
+	role, err := b.getRole(ctx, req.Storage, roleName)
+	if err != nil {
+		return nil, err
+	}
+	if mount == "" && role != nil {
+		mount = role.OutputKVMount
+	}
+	if mount == "" {
+		return logical.ErrorResponse("未配置 KV 输出：mount 缺省且 role 未设置 output_kv_mount"), nil
+	}
+	if err := validateKVPathOverride(pathOverride); err != nil {
+		return logical.ErrorResponse("%v", err), nil
+	}
+
+	policy := kvPolicyEnforce
+	if force {
+		policy = kvPolicyOverwrite
+	}
+
+	var updated *cacheEntry
+	var writeErr error
+	if err := b.cacheUpdate(ctx, req.Storage, key, func(e *cacheEntry) *cacheEntry {
+		oldLinked, oldMount, oldOverride := e.OutputKVLinked, e.OutputKVMount, e.OutputKVPathOverride
+		e.OutputKVLinked = true
+		e.OutputKVMount = mount
+		e.OutputKVPathOverride = pathOverride
+		if _, werr := b.writeCertOutput(ctx, req, roleName, role, key, e, policy); werr != nil {
+			// 回滚绑定字段：不得让失败的 link 改写"最后成功写入位置"。
+			e.OutputKVLinked = oldLinked
+			e.OutputKVMount = oldMount
+			e.OutputKVPathOverride = oldOverride
+			writeErr = werr
+		}
+		updated = e
+		return e
+	}); err != nil {
+		return nil, err
+	}
+	if writeErr != nil {
+		return kvWriteErrorResponse("KV link", writeErr), nil
+	}
+	return &logical.Response{Data: outputKVFields(updated, key)}, nil
+}
+
+// pathCertKVUnlink：解除绑定。delete_kv=true 时按条目实际绑定位置（生效 mount +
+// override path）删除 KV 数据，删除失败返回错误；随后清空全部投影/link 字段。
+func (b *backend) pathCertKVUnlink(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	roleName := d.Get("role").(string)
+	cn := d.Get("cn").(string)
+	deleteKV := d.Get("delete_kv").(bool)
+
+	entry, key, err := b.findCertEntryByRoleCN(ctx, req.Storage, roleName, cn)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, nil // 404
+	}
+
+	kvDeleted := false
+	if deleteKV {
+		if mount := b.resolveOutputKVMount(ctx, req.Storage, entry); mount != "" {
+			if derr := b.deleteCertOutput(ctx, req.ClientToken, mount, key, entry); derr != nil {
+				return logical.ErrorResponse("删除 KV 数据失败: %v", derr), nil
+			}
+			kvDeleted = true
+		}
+	}
+
+	if err := b.cacheUpdate(ctx, req.Storage, key, func(e *cacheEntry) *cacheEntry {
+		e.OutputKVLinked = false
+		e.OutputKVPathOverride = ""
+		e.OutputKVMount = ""
+		e.OutputKVPath = ""
+		e.OutputKVStatus = ""
+		return e
+	}); err != nil {
+		return nil, err
+	}
+	return &logical.Response{Data: map[string]any{"unlinked": true, "kv_deleted": kvDeleted}}, nil
 }
