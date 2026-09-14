@@ -185,7 +185,7 @@ var registry = map[string]builder{
 ## 7. 签发 / 缓存 / lease / revoke
 
 - **签发**：解析路由 → 构造 providers → 重建 lego Client（账户自存储）→ `SetDNS01Provider(routingProvider)` → `Certificate.Obtain{Domains, Bundle: true}`（插件不生成 CSR）
-- **缓存**：键 = `sha256(roleJSON + 域名集)`；首次签发建条目（引用计数 = 1）；命中且剩余寿命 ≥ `cache_for_ratio%` × 总寿命 → 直接返回（引用计数 +1）；过期 → 重签覆盖（引用计数重置为 1）。`disable_cache` 角色跳过缓存。注意：`cache` DELETE 清空后，现存 lease 的 revoke 将找不到条目、不再触发真撤销——文档需注明该操作为管理性动作
+- **缓存**：键 = `sha256(ServerURL + KeyType + 账号私钥 + 域名集)`（仅含决定证书输出的要素；role 白名单/缓存策略/KV 输出配置与账户名不参与，故 account 改名不改变 Cert ID）；首次签发建条目（引用计数 = 1）；命中且剩余寿命 ≥ `cache_for_ratio%` × 总寿命 → 直接返回（引用计数 +1）；过期 → 重签覆盖（引用计数重置为 1）。`disable_cache` 角色跳过缓存。注意：`cache` DELETE 清空后，现存 lease 的 revoke 将找不到条目、不再触发真撤销——文档需注明该操作为管理性动作
 - **并发修正**：参考仓库全局 Mutex → **RWMutex + 按缓存键 singleflight**（不同域名组合可并发签发）
 - **Renew 修正**（替代参考仓库 `TTL+=Increment` hack）：renew 回调检查剩余寿命，低于阈值 → 重签（刷新 KV 输出）→ 返回新证书数据；否则原样续 lease
 - **Revoke**：lease revoke → 引用计数 `-1` → 归零时删除缓存条目 + `Certificate.Revoke`；**KV 输出不自动删除**（文档说明，消费方可能仍需旧证书）

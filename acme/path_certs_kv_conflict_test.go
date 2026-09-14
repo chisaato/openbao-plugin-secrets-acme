@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/api"
-	"github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +42,7 @@ func TestIssueKVConflictRejected(t *testing.T) {
 	role := &roleEntry{Account: "le", AllowedDomains: []string{"example.com"},
 		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "kv-certs"}
 	putRoleFixture(t, ctx, s, role)
-	key := cacheKey(role, []string{"example.com"})
+	key := fixtureAccountKey(t, b, ctx, s, []string{"example.com"})
 	b.issueFn = stubIssueFn(t)
 
 	w := &recordingKVWriter{preset: conflictPreset("kv-certs", key)}
@@ -71,7 +70,7 @@ func TestIssueKVConflictForceOverwrite(t *testing.T) {
 	role := &roleEntry{Account: "le", AllowedDomains: []string{"example.com"},
 		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "kv-certs"}
 	putRoleFixture(t, ctx, s, role)
-	key := cacheKey(role, []string{"example.com"})
+	key := fixtureAccountKey(t, b, ctx, s, []string{"example.com"})
 	b.issueFn = stubIssueFn(t)
 
 	w := &recordingKVWriter{preset: conflictPreset("kv-certs", key)}
@@ -100,7 +99,7 @@ func TestIssueKVSelfVersionAllowed(t *testing.T) {
 	role := &roleEntry{Account: "le", AllowedDomains: []string{"example.com"},
 		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "kv-certs"}
 	putRoleFixture(t, ctx, s, role)
-	key := cacheKey(role, []string{"example.com"})
+	key := fixtureAccountKey(t, b, ctx, s, []string{"example.com"})
 	b.issueFn = stubIssueFn(t)
 
 	w := &recordingKVWriter{preset: map[string]map[string]interface{}{
@@ -128,9 +127,7 @@ func TestRenewKVConflictBestEffort(t *testing.T) {
 	})
 	b.issueFn = stubIssueFn(t)
 
-	role, err := storage.GetRole(ctx, s, "web")
-	require.NoError(t, err)
-	key := cacheKey(role, []string{"example.com"})
+	key := fixtureAccountKey(t, b, ctx, s, []string{"example.com"})
 	base := time.Now()
 	// 预置条目：上次成功写入位置为 old-mount。
 	require.NoError(t, s.Put(ctx, &logical.StorageEntry{
@@ -178,7 +175,7 @@ func TestRunJobKVConflict(t *testing.T) {
 		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "kv-certs"}
 	putRoleFixture(t, ctx, s, role)
 	b.issueFn = stubIssueFn(t)
-	key := cacheKey(role, []string{"example.com"})
+	key := fixtureAccountKey(t, b, ctx, s, []string{"example.com"})
 
 	w := &recordingKVWriter{preset: conflictPreset("kv-certs", key)}
 	b.kvWriter = w
@@ -207,7 +204,7 @@ func TestKVProjectionWrittenAndGet(t *testing.T) {
 	role := &roleEntry{Account: "le", AllowedDomains: []string{"example.com"},
 		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "kv-certs"}
 	putRoleFixture(t, ctx, s, role)
-	key := cacheKey(role, []string{"example.com"})
+	key := fixtureAccountKey(t, b, ctx, s, []string{"example.com"})
 	b.issueFn = stubIssueFn(t)
 	b.kvWriter = &recordingKVWriter{}
 
@@ -247,7 +244,7 @@ func TestKVProjectionPathFallbackOldEntry(t *testing.T) {
 	role := &roleEntry{Account: "le", AllowedDomains: []string{"example.com"},
 		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "kv-certs"}
 	putRoleFixture(t, ctx, s, role)
-	key := cacheKey(role, []string{"example.com"})
+	key := fixtureAccountKey(t, b, ctx, s, []string{"example.com"})
 	base := time.Now()
 	// 模拟上一版本写入的条目：有 Mount/Status，无 Path。
 	require.NoError(t, s.Put(ctx, &logical.StorageEntry{
@@ -282,7 +279,7 @@ func TestRevokeUsesRecordedMount(t *testing.T) {
 	role := &roleEntry{Account: "le", AllowedDomains: []string{"example.com"},
 		AllowBareDomains: true, CacheForRatio: 70, OutputKVMount: "new-mount"}
 	putRoleFixture(t, ctx, s, role)
-	key := cacheKey(role, []string{"example.com"})
+	key := fixtureAccountKey(t, b, ctx, s, []string{"example.com"})
 	base := time.Now()
 	require.NoError(t, s.Put(ctx, &logical.StorageEntry{
 		Key: storageKeyCache + key,

@@ -38,12 +38,13 @@ func leaseReq(storage logical.Storage, key string) *logical.Request {
 // 返回与 InternalData 一致的 cache_key。
 func seedCacheEntry(t *testing.T, b *backend, ctx context.Context, storage logical.Storage, notBefore, notAfter time.Time, users int) string {
 	t.Helper()
-	role := &roleEntry{Account: "le"}
+	account, err := b.getAccount(ctx, storage, "le")
+	require.NoError(t, err)
 	entry := &cacheEntry{
 		Users: users, Account: "le", CN: "example.com", Domains: []string{"example.com"},
 		CertificatePEM: selfSignedCertFor(t, notBefore, notAfter),
 	}
-	key := cacheKey(role, []string{"example.com"})
+	key := cacheKey(account, []string{"example.com"})
 	require.NoError(t, b.cachePut(ctx, storage, key, entry))
 	return key
 }
@@ -297,9 +298,9 @@ func TestIssueSingleflightWaitersRefcount(t *testing.T) {
 	}
 	close(start) // N 个请求同时出发，重叠于 singleflight 窗口内
 
-	role, err := b.getRole(ctx, storage, "web")
+	account, err := b.getAccount(ctx, storage, "le")
 	require.NoError(t, err)
-	key := cacheKey(role, []string{"example.com"})
+	key := cacheKey(account, []string{"example.com"})
 
 	for i := 0; i < n; i++ {
 		r := <-results
@@ -323,10 +324,10 @@ func TestRenewReissueWaitersRefcount(t *testing.T) {
 	ctx := context.Background()
 
 	// 种入过期条目（Users=2，模拟 2 个 lease 均待续期），key 与真实签发一致。
-	role, err := b.getRole(ctx, storage, "web")
+	account, err := b.getAccount(ctx, storage, "le")
 	require.NoError(t, err)
 	domains := []string{"example.com"}
-	key := cacheKey(role, domains)
+	key := cacheKey(account, domains)
 	base := time.Now()
 	require.NoError(t, b.cachePut(ctx, storage, key, &cacheEntry{
 		Users: 2, Account: "le", CN: domains[0], Domains: domains,

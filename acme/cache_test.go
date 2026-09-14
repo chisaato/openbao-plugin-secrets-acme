@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	storagepkg "github.com/chisaato/openbao-plugin-secrets-acme/pkg/storage"
 	"github.com/openbao/openbao/sdk/v2/logical"
 	"github.com/stretchr/testify/require"
 )
@@ -39,18 +40,47 @@ func selfSignedCertFor(t *testing.T, notBefore, notAfter time.Time) string {
 }
 
 func TestCacheKeyDeterministic(t *testing.T) {
-	role := &roleEntry{Account: "le"}
-	d1 := cacheKey(role, []string{"b.com", "a.com"})
-	d2 := cacheKey(role, []string{"a.com", "b.com"})
-	d3 := cacheKey(role, []string{"a.com", "c.com"})
+	account := &storagepkg.AccountEntry{ServerURL: "https://acme.test/dir", KeyType: "EC256", PrivateKeyPEM: "KEY"}
+	d1 := cacheKey(account, []string{"b.com", "a.com"})
+	d2 := cacheKey(account, []string{"a.com", "b.com"})
+	d3 := cacheKey(account, []string{"a.com", "c.com"})
 	require.Equal(t, d1, d2) // 域名顺序无关
 	require.NotEqual(t, d1, d3)
+}
+
+// TestCacheKeyScopedToIssuanceInputs：回归用例 guarding cacheKey 的输入面。
+// 只有 ServerURL/KeyType/账号私钥/域名集合参与;role 已不再是参数,故 role 的
+// 白名单、缓存策略、KV 配置变化天然不影响 Cert ID(编译期保证调用形式不含 role)。
+func TestCacheKeyScopedToIssuanceInputs(t *testing.T) {
+	base := &storagepkg.AccountEntry{ServerURL: "https://acme.test/dir", KeyType: "EC256", PrivateKeyPEM: "KEY"}
+	domains := []string{"a.com", "b.com"}
+
+	// 域名顺序无关
+	require.Equal(t, cacheKey(base, []string{"b.com", "a.com"}), cacheKey(base, domains))
+
+	// ServerURL(CA 环境)不同 → key 不同
+	staging := *base
+	staging.ServerURL = "https://acme-staging.test/dir"
+	require.NotEqual(t, cacheKey(base, domains), cacheKey(&staging, domains))
+
+	// 账号私钥不同 → key 不同(账号身份)
+	rotated := *base
+	rotated.PrivateKeyPEM = "KEY2"
+	require.NotEqual(t, cacheKey(base, domains), cacheKey(&rotated, domains))
+
+	// KeyType 不同 → key 不同(CSR 公钥类型)
+	rsa := *base
+	rsa.KeyType = "RSA2048"
+	require.NotEqual(t, cacheKey(base, domains), cacheKey(&rsa, domains))
+
+	// 域名集合不同 → key 不同
+	require.NotEqual(t, cacheKey(base, domains), cacheKey(base, []string{"a.com", "c.com"}))
 }
 
 func TestCacheCRUDAndRefcount(t *testing.T) {
 	b, storage := testBackendConfig(t)
 	ctx := context.Background()
-	key := cacheKey(&roleEntry{Account: "le"}, []string{"a.com"})
+	key := cacheKey(&storagepkg.AccountEntry{ServerURL: "https://acme.test/dir"}, []string{"a.com"})
 
 	// 初始无
 	e, err := b.cacheGet(ctx, storage, key)

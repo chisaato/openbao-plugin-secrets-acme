@@ -115,14 +115,15 @@ func TestAccountRenameMigratesCache(t *testing.T) {
 	b, s := testBackend(t, NewFakeCredentialLoader(nil))
 	ctx := context.Background()
 
-	putAccountRaw(t, ctx, s, "old")
+	account := putAccountRaw(t, ctx, s, "old")
 	role := &roleEntry{Account: "old", AllowedDomains: []string{"a.com"}}
 	putRoleRaw(t, ctx, s, "r", role)
 
 	domains := []string{"a.com"}
-	oldKey := cacheKey(role, domains)
+	// cacheKey 不含账户名，改名后 key 保持不变。
+	key := cacheKey(account, domains)
 	require.NoError(t, s.Put(ctx, &logical.StorageEntry{
-		Key: storageKeyCache + oldKey,
+		Key: storageKeyCache + key,
 		Value: mustJSON(t, &cacheEntry{
 			Users: 3, Account: "old", Role: "r", CN: "a.com", Domains: domains,
 		}),
@@ -132,21 +133,13 @@ func TestAccountRenameMigratesCache(t *testing.T) {
 	require.False(t, resp.IsError(), "rename: %v", resp)
 	require.Equal(t, 1, resp.Data["migrated_certs"])
 
-	newRole := *role
-	newRole.Account = "new"
-	newKey := cacheKey(&newRole, domains)
-	require.NotEqual(t, oldKey, newKey)
-
-	migrated, err := storage.GetCache(ctx, s, newKey)
+	// 条目仍在原 key 下，仅 Account 展示字段就地更新。
+	migrated, err := storage.GetCache(ctx, s, key)
 	require.NoError(t, err)
 	require.NotNil(t, migrated)
 	require.Equal(t, 3, migrated.Users)
 	require.Equal(t, "new", migrated.Account)
 	require.Equal(t, "r", migrated.Role)
-
-	old, err := storage.GetCache(ctx, s, oldKey)
-	require.NoError(t, err)
-	require.Nil(t, old, "旧缓存键应被删除")
 }
 
 func TestAccountRenameCacheOrphanEntry(t *testing.T) {
@@ -209,18 +202,20 @@ func TestAccountRenameConflicts(t *testing.T) {
 	require.Contains(t, resp.Error().Error(), "不存在")
 }
 
-func TestAccountRenameKVMigration(t *testing.T) {
+// TestAccountRenameNoKVMigration：cacheKey 不含账户名 → 改名后 KV 输出路径
+// certs/{certID} 不变，不产生任何 KV 写/删，也无 warnings。
+func TestAccountRenameNoKVMigration(t *testing.T) {
 	b, s := testBackend(t, NewFakeCredentialLoader(nil))
 	ctx := context.Background()
 
-	putAccountRaw(t, ctx, s, "old")
+	account := putAccountRaw(t, ctx, s, "old")
 	role := &roleEntry{Account: "old", AllowedDomains: []string{"a.com"}, OutputKVMount: "kv"}
 	putRoleRaw(t, ctx, s, "r", role)
 
 	domains := []string{"a.com"}
-	oldKey := cacheKey(role, domains)
+	key := cacheKey(account, domains)
 	require.NoError(t, s.Put(ctx, &logical.StorageEntry{
-		Key: storageKeyCache + oldKey,
+		Key: storageKeyCache + key,
 		Value: mustJSON(t, &cacheEntry{
 			Users: 1, Account: "old", Role: "r", CN: "a.com", Domains: domains,
 			CertificatePEM: "C", PrivateKeyPEM: "K", IssuerCertificatePEM: "I",
@@ -241,14 +236,13 @@ func TestAccountRenameKVMigration(t *testing.T) {
 	require.False(t, resp.IsError(), "rename: %v", resp)
 	require.Nil(t, resp.Data["warnings"])
 
-	newRole := *role
-	newRole.Account = "new"
-	newKey := cacheKey(&newRole, domains)
+	// 无 KV 迁移：不写不删。
+	require.Empty(t, w.writes)
+	require.Empty(t, w.deletes)
 
-	require.Len(t, w.writes, 1)
-	require.Equal(t, "certs/"+newKey, w.writes[0].path)
-	require.Equal(t, "kv", w.writes[0].mount)
-	require.Len(t, w.deletes, 1)
-	require.Equal(t, "certs/"+oldKey, w.deletes[0].path)
-	require.Equal(t, "kv", w.deletes[0].mount)
+	// 条目仍在原 key 下，Account 已更新。
+	got, err := storage.GetCache(ctx, s, key)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "new", got.Account)
 }

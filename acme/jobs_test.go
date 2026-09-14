@@ -73,9 +73,11 @@ func TestRunJobCompletes(t *testing.T) {
 	b, storage, ctx := jobFixture(t)
 	role, err := b.getRole(ctx, storage, "web")
 	require.NoError(t, err)
+	account, err := b.getAccount(ctx, storage, role.Account)
+	require.NoError(t, err)
 	domains := []string{"example.com"}
 	job := &jobEntry{ID: "job1", Role: "web", Account: role.Account, CN: domains[0],
-		Domains: domains, CacheKey: cacheKey(role, domains), Status: jobPending,
+		Domains: domains, CacheKey: cacheKey(account, domains), Status: jobPending,
 		CreatedAt: time.Now().UTC()}
 	require.NoError(t, b.jobUpdate(ctx, storage, job))
 
@@ -146,7 +148,7 @@ func TestRunJobKVFailureMirrorsSyncInvariant(t *testing.T) {
 	require.Equal(t, jobFailed, done.Status)
 	require.Contains(t, done.Error, "KV 输出失败")
 	// 镜像同步路径不变式：KV 失败不留孤儿条目（spec §7/§9）
-	entry, err := b.cacheGet(ctx, storage, cacheKey(role, []string{"example.com"}))
+	entry, err := b.cacheGet(ctx, storage, fixtureAccountKey(t, b, ctx, storage, []string{"example.com"}))
 	require.NoError(t, err)
 	require.Nil(t, entry)
 }

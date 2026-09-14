@@ -176,16 +176,28 @@ func putRoleFixtureAt(t *testing.T, ctx context.Context, storage logical.Storage
 	}))
 }
 
+// fixtureAccountKey：测试夹具 account "le" 的 cacheKey（与签发路径一致）。
+func fixtureAccountKey(t *testing.T, b *backend, ctx context.Context, s logical.Storage, domains []string) string {
+	t.Helper()
+	account, err := b.getAccount(ctx, s, "le")
+	require.NoError(t, err)
+	require.NotNil(t, account, "account %q 应存在", "le")
+	return cacheKey(account, domains)
+}
+
 // putFreshCacheEntry 预置一条新鲜（剩余寿命约 96% > 默认 70%）的缓存条目。
 func putFreshCacheEntry(t *testing.T, b *backend, ctx context.Context, storage logical.Storage, role *roleEntry, domains []string) string {
 	t.Helper()
+	account, err := b.getAccount(ctx, storage, role.Account)
+	require.NoError(t, err)
+	require.NotNil(t, account, "account %q 应存在", role.Account)
 	base := time.Now().UTC().Truncate(time.Second)
 	entry := &cacheEntry{
 		Users: 1, Account: role.Account, CN: domains[0], Domains: domains,
 		CertificatePEM: selfSignedCertFor(t, base.Add(-time.Hour), base.Add(24*time.Hour)),
 		PrivateKeyPEM:  "K", IssuerCertificatePEM: "I",
 	}
-	key := cacheKey(role, domains)
+	key := cacheKey(account, domains)
 	require.NoError(t, b.cachePut(ctx, storage, key, entry))
 	return key
 }
@@ -221,9 +233,9 @@ func TestDisableCacheRoleSkipsCachePut(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	role, err := b.getRole(ctx, storage, "web")
+	account, err := b.getAccount(ctx, storage, "le")
 	require.NoError(t, err)
-	key := cacheKey(role, []string{"example.com"})
+	key := cacheKey(account, []string{"example.com"})
 
 	issue := func(stage string) {
 		resp, err := b.HandleRequest(ctx, &logical.Request{
@@ -400,9 +412,9 @@ func TestIssueKVFailureDropsCacheEntry(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	role, err := b.getRole(ctx, storage, "web")
+	account, err := b.getAccount(ctx, storage, "le")
 	require.NoError(t, err)
-	key := cacheKey(role, []string{"example.com"})
+	key := cacheKey(account, []string{"example.com"})
 
 	b.kvWriter = &failingKVWriter{err: errors.New("kv unavailable")}
 
@@ -496,9 +508,9 @@ func TestDoIssueSetsRoleField(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	role, err := b.getRole(ctx, storage, "web")
+	account, err := b.getAccount(ctx, storage, "le")
 	require.NoError(t, err)
-	entry, err := b.cacheGet(ctx, storage, cacheKey(role, []string{"example.com"}))
+	entry, err := b.cacheGet(ctx, storage, cacheKey(account, []string{"example.com"}))
 	require.NoError(t, err)
 	require.NotNil(t, entry)
 	require.Equal(t, "web", entry.Role)

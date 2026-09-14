@@ -26,7 +26,9 @@ func seedKVOpEntry(t *testing.T, b *backend, ctx context.Context, s logical.Stor
 	if entry.CN == "" {
 		entry.CN = cn
 	}
-	key := cacheKey(role, entry.Domains)
+	account, err := b.getAccount(ctx, s, role.Account)
+	require.NoError(t, err)
+	key := cacheKey(account, entry.Domains)
 	require.NoError(t, b.cachePut(ctx, s, key, entry))
 	return key
 }

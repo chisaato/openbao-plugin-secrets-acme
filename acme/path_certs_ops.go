@@ -564,7 +564,7 @@ func (b *backend) pathCertRenewExplicit(ctx context.Context, req *logical.Reques
 		return logical.ErrorResponse("account %q 不存在", role.Account), nil
 	}
 
-	key := cacheKey(role, entry.Domains)
+	key := cacheKey(account, entry.Domains)
 	v, err, _ := b.issueGroup.Do(key, func() (any, error) {
 		return b.doIssue(ctx, req, roleName, role, account, entry.CN, entry.Domains, key, nil, kvPolicyBestEffort)
 	})

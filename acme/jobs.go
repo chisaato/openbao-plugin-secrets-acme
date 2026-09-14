@@ -133,7 +133,7 @@ func (b *backend) runJob(ctx context.Context, st logical.Storage, job *jobEntry)
 		return
 	}
 
-	key := cacheKey(role, job.Domains) // 以驱动时的 role 现值计算
+	key := cacheKey(account, job.Domains) // 以驱动时的 account 现值计算(账号身份不变则 key 稳定)
 	entry := &cacheEntry{
 		// 不变式（spec §7）：异步完成无 lease 持引用 → Users=0；
 		// 后续每次精确命中/覆盖复用再 Users++。
@@ -274,6 +274,14 @@ func (b *backend) submitJobWithOverrides(ctx context.Context, req *logical.Reque
 	if existing != nil {
 		return b.jobResponse(existing), nil
 	}
+	// cacheKey 由 account 决定,提交时需加载 account;缺失时按 sync 路径风格报错。
+	account, err := b.getAccount(ctx, req.Storage, role.Account)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return logical.ErrorResponse("account %q 不存在", role.Account), nil
+	}
 	id, err := newJobID()
 	if err != nil {
 		return nil, err
@@ -282,7 +290,7 @@ func (b *backend) submitJobWithOverrides(ctx context.Context, req *logical.Reque
 	job := &jobEntry{
 		ID: id, Role: roleName, Account: role.Account,
 		CN: cn, AltNames: domains[1:], Domains: domains,
-		CacheKey: cacheKey(role, domains),
+		CacheKey: cacheKey(account, domains),
 		Status:   jobPending, CreatedAt: now, UpdatedAt: now,
 	}
 	if ov != nil {

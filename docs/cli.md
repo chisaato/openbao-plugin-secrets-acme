@@ -159,8 +159,9 @@ bao-acme account deactivate le-staging
 
 #### `account rename <old> <new>`
 
-纯本地重命名账户（不与 CA 交互），级联更新引用旧名的 `roles`/`jobs` 并迁移证书缓存键；
-`output_kv_mount` 的 KV 输出迁移失败时仅告警。输出提示各迁移计数，`warnings` 非空时逐行打印。
+纯本地重命名账户（不与 CA 交互）。cacheKey 不含账户名（仅由 `server_url`/`key_type`/账号私钥/域名集合决定），
+故缓存键与 KV 输出路径 `certs/{cert_id}` 不变，无需搬家或迁移：仅就地更新缓存条目的 `account` 展示字段，
+并级联更新引用旧名的 `roles`/`jobs`。输出提示各迁移计数。
 
 ```bash
 bao-acme account rename le-staging le-staging-2026

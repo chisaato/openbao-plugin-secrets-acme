@@ -85,7 +85,9 @@ func TestFindReusableEntryGuards(t *testing.T) {
 		AllowBareDomains: true, AllowSubdomains: true, CacheForRatio: 70}
 	putRoleFixture(t, ctx, storage, role)
 
-	// 跨 account 不复用
+	// 跨 account 不复用：先落一个 other 账户条目（putFreshCacheEntry 需按
+	// account 计算 cacheKey）。
+	putAccountRaw(t, ctx, storage, "other")
 	otherAcct := &roleEntry{Account: "other", AllowedDomains: []string{"example.com"},
 		AllowBareDomains: true, CacheForRatio: 70}
 	key := putFreshCacheEntry(t, b, ctx, storage, otherAcct, []string{"*.example.com"})

@@ -162,7 +162,7 @@ func (b *backend) pathIssueCert(ctx context.Context, req *logical.Request, d *fr
 		return logical.ErrorResponse("account %q 不存在", role.Account), nil
 	}
 
-	key := cacheKey(role, domains)
+	key := cacheKey(account, domains)
 
 	forceNew := false
 	if f, ok := d.GetOk("force"); ok {

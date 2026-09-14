@@ -102,11 +102,12 @@ EOF
   ```sh
   bao write acme/accounts/prod/rename new_name=prod-2026
   ```
-  语义：级联更新引用旧账户名的 `roles` 与 `jobs`，并按新 `role.Account` 重算、
-  迁移证书缓存键（先写新键再删旧键）；`output_kv_mount` 的 KV 输出迁移为尽力而为，
-  失败仅在响应 `warnings` 中告警而不阻断。响应 `data` 含
-  `old_name`/`new_name`/`migrated_roles`/`migrated_jobs`/`migrated_certs`，以及可选的
-  `warnings`。存量 lease 仍按其旧 `cache_key` 定位条目，条目缺失时优雅降级，无需额外处理。
+  语义：cacheKey 不含账户名（仅由 `ServerURL`/`KeyType`/账号私钥/域名集合决定），
+  故改名后**缓存键与 KV 输出路径 `certs/{cert_id}` 不变**，无需搬家或迁移；仅就地更新
+  缓存条目的 `account` 展示字段，并级联更新引用旧账户名的 `roles` 与 `jobs`，最后迁移
+  账户条目本身。响应 `data` 含
+  `old_name`/`new_name`/`migrated_roles`/`migrated_jobs`/`migrated_certs`。
+  存量 lease 仍按其 `cache_key` 定位条目（key 未变）。
 - **导出账户**（跨实例迁移用；载荷含私钥，高敏感）：
   ```sh
   bao read acme/accounts/prod/export

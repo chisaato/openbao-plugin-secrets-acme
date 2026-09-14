@@ -21,12 +21,15 @@ const storageKeyCache = storage.StorageKeyCache
 // cacheEntry 兼容 storage.CacheEntry
 type cacheEntry = storage.CacheEntry
 
-// cacheKey：sha256(roleJSON + 排序后 domains)，域名顺序无关。
-func cacheKey(role *roleEntry, domains []string) string {
-	roleJSON, _ := json.Marshal(role)
+// cacheKey 只由真正决定证书输出的要素派生:CA 环境(ServerURL)、ACME 账号
+// 身份(账号私钥)、CSR 公钥类型(KeyType)与域名集合。role 白名单、缓存
+// 策略、KV 输出配置等客户端策略不参与——role/account 的非签发字段变更或
+// account 改名都不再使 Cert ID 漂移。
+// 各字段间以 \x00 分隔,避免字符串拼接产生歧义(如跨字段内容错位拼合)。
+func cacheKey(account *storage.AccountEntry, domains []string) string {
 	sorted := append([]string(nil), domains...)
 	sort.Strings(sorted)
-	sum := sha256.Sum256(append(roleJSON, []byte(strings.Join(sorted, ","))...))
+	sum := sha256.Sum256([]byte(account.ServerURL + "\x00" + account.KeyType + "\x00" + account.PrivateKeyPEM + "\x00" + strings.Join(sorted, ",")))
 	return hex.EncodeToString(sum[:])
 }
 
