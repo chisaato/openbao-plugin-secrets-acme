@@ -26,7 +26,7 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	cmd.PersistentFlags().StringVar(&FlagAddress, "address", "", "OpenBao 服务地址 (默认从 BAO_ADDR/VAULT_ADDR 读取，或 http://127.0.0.1:8200)")
-	cmd.PersistentFlags().StringVar(&FlagToken, "token", "", "OpenBao 访问 Token (默认从 BAO_TOKEN/VAULT_TOKEN 读取)")
+	cmd.PersistentFlags().StringVar(&FlagToken, "token", "", "OpenBao 访问 Token (默认依次从 BAO_TOKEN/VAULT_TOKEN、以及 bao CLI token helper 即 ~/.vault-token 读取，后者为 bao CLI 登录后的 token 缓存位置，认证方式不限)")
 	cmd.PersistentFlags().StringVar(&FlagMount, "mount", "acme", "ACME 插件挂载路径")
 	cmd.PersistentFlags().StringVarP(&FlagFormat, "format", "f", "text", "输出格式 (text 或 json)")
 

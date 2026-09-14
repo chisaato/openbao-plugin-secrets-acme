@@ -48,6 +48,18 @@ func NewClient(cfg Config) (*Client, error) {
 			token = os.Getenv("VAULT_TOKEN")
 		}
 	}
+	// 显式来源（flag/env）都为空时，回退到 bao CLI 的 token helper，
+	// 以复用 `bao login` 登录后保存的 token。
+	if token == "" {
+		helperToken, err := tokenFromBaoHelper(addr)
+		if err != nil {
+			return nil, fmt.Errorf("读取 bao CLI token helper 失败: %w", err)
+		}
+		token = helperToken
+	}
+	if token == "" {
+		return nil, fmt.Errorf(`未找到 OpenBao token：请先用 bao CLI 完成登录（任意认证方式均可，token 会被本 CLI 自动读取），或通过 --token / BAO_TOKEN 提供`)
+	}
 
 	mount := cfg.Mount
 	if mount == "" {
@@ -66,9 +78,7 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("init openbao client: %w", err)
 	}
 
-	if token != "" {
-		baoClient.SetToken(token)
-	}
+	baoClient.SetToken(token)
 
 	return &Client{
 		bao:   baoClient,

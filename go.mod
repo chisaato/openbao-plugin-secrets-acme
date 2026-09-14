@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/go-acme/lego/v5 v5.4.1
 	github.com/go-viper/mapstructure/v2 v2.5.0
+	github.com/hashicorp/hcl v1.0.1-vault-7
 	github.com/openbao/openbao/api/v2 v2.6.0
 	github.com/openbao/openbao/sdk/v2 v2.6.2
 	github.com/stretchr/testify v1.12.1
@@ -46,7 +47,6 @@ require (
 	github.com/hashicorp/go-version v1.9.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
-	github.com/hashicorp/hcl v1.0.1-vault-7 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.13-0.20220915233716-71ac16282d12 // indirect

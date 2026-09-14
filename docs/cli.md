@@ -52,9 +52,21 @@ CLI 默认会自动读取标准环境变量，无须每次输入连接参数：
 | 环境变量                    | 命令行 Flag    | 默认值                  | 说明                                            |
 | --------------------------- | -------------- | ----------------------- | ----------------------------------------------- |
 | `BAO_ADDR` / `VAULT_ADDR`   | `--address`    | `http://127.0.0.1:8200` | OpenBao 服务监听地址                            |
-| `BAO_TOKEN` / `VAULT_TOKEN` | `--token`      | 空                      | 访问 Token（亦可登录后保存在 `~/.vault-token`） |
+| `BAO_TOKEN` / `VAULT_TOKEN` | `--token`      | 空                      | 访问 Token。解析优先级：`--token` > `BAO_TOKEN`/`VAULT_TOKEN` > bao CLI token helper（`BAO_TOKEN_PATH` 或 `~/.vault-token`，`bao` CLI 登录（认证方式不限）后的缓存位置）> 外部 helper（`~/.bao` 中的 `token_helper`） |
 | `ACME_MOUNT`                | `--mount`      | `acme`                  | ACME 插件在 OpenBao 中的挂载路径                |
 | -                           | `-f, --format` | `text`                  | 输出格式：`text` 或 `json`                      |
+
+#### 身份外部委托
+
+`bao-acme` 自身**不实现任何认证流程，也不驱动或调用 `bao` 二进制**。身份由外部完成：使用 `bao` CLI 以任意方式登录（`oidc`、`userpass`、`ldap`、`token` 等均可），或由运维/CI 直接注入，token 落于标准缓存位置。
+
+`bao-acme` 仅**被动读取**下列固定位置，不干预其写入：
+
+- 环境变量：`BAO_TOKEN` / `VAULT_TOKEN`
+- 文件：`BAO_TOKEN_PATH` 指定的文件，或默认的 `~/.vault-token`
+- 外部 token helper：`~/.bao`（或 `BAO_CONFIG_PATH`）中 `token_helper` 配置的命令
+
+因此认证方式的增删与切换对 `bao-acme` 完全透明。
 
 ---
 
