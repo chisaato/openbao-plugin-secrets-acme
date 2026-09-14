@@ -9,3 +9,7 @@ bao-config.hcl
 
 # IDE
 .idea/
+
+# BEGIN oh-my-opencode-slim clonedeps
+.slim/clonedeps/repos/
+# END oh-my-opencode-slim clonedeps

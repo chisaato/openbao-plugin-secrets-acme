@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2026-09-15T00:00:00.000Z",
+  "dependencies": [
+    {
+      "name": "openbao",
+      "resolvedVersion": "v2.6.2",
+      "repoUrl": "https://github.com/openbao/openbao.git",
+      "ref": "v2.6.2",
+      "path": ".slim/clonedeps/repos/openbao__openbao",
+      "reason": "OpenBao 核心源码,用于研究其原生凭据标识/accessor 存储机制( token accessor、PKI cert accessor、lease),为插件 cert name 设计提供参照"
+    }
+  ]
+}
