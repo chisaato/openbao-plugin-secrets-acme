@@ -21,10 +21,13 @@ jobs:
           cache: true
 
       - name: Install Pebble and Challtestsrv
-        # pebble v2.7.0 起 module path 为 post-v2（github.com/letsencrypt/pebble/v2），
-        # 旧导入路径安装报 "invalid version: go.mod has post-v2 module path"。
+        # pebble v2.7.0 起为 post-v2 module path（旧路径报 "go.mod has post-v2
+        # module path"），且 challtestsrv 不在 `v2/...` 通配范围内——必须显式
+        # 安装；固定 v2.10.1 与 test.yml 一致（challtestsrv 管理 API 与测试
+        # fixture 对齐），pebble 本体跟随 @latest。
         run: |
-          go install github.com/letsencrypt/pebble/v2/...@v2.7.0
+          go install github.com/letsencrypt/pebble/v2/cmd/pebble@latest
+          go install github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.10.1
 
       - name: Run Tests (-race)
         run: |
