@@ -309,8 +309,10 @@ func (b *backend) submitJobWithOverrides(ctx context.Context, req *logical.Reque
 
 // initializeBackend：挂载/重启（unseal 后 backend 重建）时恢复未完成 job
 // （spec §8）。role/account 若已被删除，Worker 自然失败并落错误信息。
+// startAutoRenewer 必须在 startJobRunner 之后：共享后者设置的 jobCtx。
 func (b *backend) initializeBackend(ctx context.Context, req *logical.InitializationRequest) error {
 	b.startJobRunner(req.Storage)
+	b.startAutoRenewer(req.Storage)
 	return nil
 }
 

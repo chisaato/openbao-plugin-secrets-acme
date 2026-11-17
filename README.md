@@ -14,6 +14,7 @@ OpenBao 的 ACME Secrets Engine，基于 [lego v5](https://github.com/go-acme/le
 - 🔒 **凭据解耦存储**：DNS API 凭据仅保存 KV 引用，插件签发时使用服务身份实时拉取，云厂商 API Key 轮换即刻生效，无需重启插件。
 - ⚡ **默认异步签发**：避免 Let's Encrypt DNS 验证延迟导致 HTTP 超时，签发任务持久化，支持 OpenBao 重启后自动恢复未完成的 Job。
 - 🔄 **智能缓存与租约管理**：基于剩余有效期比例 (`cache_for_ratio`) 的自动重签机制；Lease 引用计数保证多服务共享证书时不会因单个撤销而影响其他消费者。
+- ⏰ **后台自动续签**：插件周期扫描证书缓存，按 `cache_for_ratio` 阈值自动重签临期证书并刷新 KV 输出，headless 场景无需外部 cron。
 - 🌐 **通配符单标签证书复用**：Account 级别自动识别已存证书范围（如 `*.example.com` 覆盖 `api.example.com`），减少 CA 速率配额消耗。
 - 🛠️ **专用运维工具**：内置专为插件设计的 `bao-acme` CLI，简化日常配置与流水线运维。
 

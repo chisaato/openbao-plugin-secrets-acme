@@ -14,6 +14,8 @@
 | `BAO_TOKEN`（或 `VAULT_TOKEN`） | **服务身份 Token**，详见下文权限配置 |
 | `BAO_CACERT` / `BAO_SKIP_VERIFY` 等 | 可选 TLS 参数（自签 CA 或内网证书场景） |
 | `BAO_TOKEN_RENEW_DISABLE` | 设为 `1`/`true` 可完全关闭内置自动续期 |
+| `BAO_ACME_AUTORENEW_DISABLE` | 设为 `1`/`true` 可完全关闭后台证书自动续签循环（外部 cron 驱动 `cert renew` 时使用） |
+| `BAO_ACME_AUTORENEW_INTERVAL` | 自动续签扫描间隔，Go duration 格式（如 `30m`），默认 `1h` |
 
 缺失 `BAO_ADDR` 或 `BAO_TOKEN` 时，发起证书签发将报 `create openbao client` 错误。
 

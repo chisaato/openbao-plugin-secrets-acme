@@ -71,6 +71,14 @@ path "acme/jobs/*" {
 - **只有当引用计数清零时**，插件才会向 ACME 权威 CA 发送真实的吊销请求并移除缓存。有效避免由于某个客户端单方面撤销导致共享相同证书的其他微服务瘫痪。
 - **清空缓存注意 (`bao delete acme/cache`)**：若管理员手动清空了缓存，随后现存 Lease 的撤销将因找不到条目而无法触发 ACME CA 真实吊销，仅完成本地资源回收。
 
+### 自动续签器 (Auto-Renewer)
+- 插件在挂载/重启后启动后台扫描循环（与异步 Job Worker 共享生命周期），默认每 **1 小时**扫描一次证书缓存：对每条条目按其签发 Role 的 `cache_for_ratio` 判定新鲜度，剩余寿命占比低于阈值的证书**自动向 CA 重签**（完整 DNS-01 流程），成功后原位覆写缓存条目并刷新 KV 输出（`output_kv_status` 回到 `written`）。
+- **引用计数不变式**：后台续签不创建 Lease，也不改变条目的 `users` 计数——续签在单写临界区内原位替换证书字段，已持有 Lease 的消费方续期/撤销时计数保持对账。重签经由与同步签发/Lease 续期相同的 singleflight 合并，同 key 并发请求共享同一次 Obtain。
+- **KV 投影失败不破坏缓存**：输出冲突/读取失败按既有 BestEffort 语义置 `skipped_conflict`/`skipped_error` 并保持"最后成功写入位置"；仅写入网络失败置 `skipped_error` 待下轮重试。后台续签**绝不删除缓存条目**（与同步签发路径 KV 硬失败删条目重试的语义相反——删除会连带丢掉 Lease 仍引用的证书）。
+- **逃生口**：
+  - `BAO_ACME_AUTORENEW_DISABLE=1`：完全关闭自动续签（外部 cron 驱动 `bao-acme cert renew` 时使用）。
+  - `BAO_ACME_AUTORENEW_INTERVAL=30m`：自定义扫描间隔（Go duration 格式，默认 `1h`）。
+
 ---
 
 ## 4. 账户级证书复用 (Account-level Certificate Reuse)
