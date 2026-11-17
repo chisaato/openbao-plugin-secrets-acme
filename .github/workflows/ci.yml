@@ -21,9 +21,10 @@ jobs:
           cache: true
 
       - name: Install Pebble and Challtestsrv
+        # pebble v2.7.0 起 module path 为 post-v2（github.com/letsencrypt/pebble/v2），
+        # 旧导入路径安装报 "invalid version: go.mod has post-v2 module path"。
         run: |
-          go install github.com/letsencrypt/pebble/...@v2.7.0
-          go install github.com/letsencrypt/pebble/cmd/pebble-challtestsrv@v2.7.0
+          go install github.com/letsencrypt/pebble/v2/...@v2.7.0
 
       - name: Run Tests (-race)
         run: |
@@ -43,9 +44,11 @@ jobs:
           cache: true
 
       - name: Build Binaries
+        # Dockerfile COPY dist/<name>_${TARGETOS}_${TARGETARCH}；CI dry-run 构建与
+        # runner 同架构（amd64）产物即可，交叉全平台由 Release 工作流负责。
         run: |
-          go build -o dist/openbao-plugin-secrets-acme ./cmd/plugin
-          go build -o dist/bao-acme ./cmd/bao-acme
+          GOOS=linux GOARCH=amd64 go build -o dist/openbao-plugin-secrets-acme_linux_amd64 ./cmd/plugin
+          GOOS=linux GOARCH=amd64 go build -o dist/bao-acme_linux_amd64 ./cmd/bao-acme
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
