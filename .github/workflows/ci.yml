@@ -44,8 +44,8 @@ jobs:
 
       - name: Build Binaries
         run: |
-          go build -o bin/openbao-plugin-secrets-acme ./cmd/plugin
-          go build -o bin/bao-acme ./cmd/bao-acme
+          go build -o dist/openbao-plugin-secrets-acme ./cmd/plugin
+          go build -o dist/bao-acme ./cmd/bao-acme
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

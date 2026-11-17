@@ -7,7 +7,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
 PLUGIN_NAME="openbao-plugin-secrets-acme"
-BIN_PATH="bin/$PLUGIN_NAME"
+BIN_PATH="dist/$PLUGIN_NAME"
 TARGET_DIR="data/plugins"
 CONFIG_FILE="bao-config.hcl"
 

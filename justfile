@@ -13,14 +13,16 @@ platforms := "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 linux/386 linux/
 # 默认目标：构建
 default: build
 
-# 构建 bin/openbao-plugin-secrets-acme（ldflags 注入 acme.Version）以及 CLI bin/bao-acme
+# 构建插件与 CLI 到 dist/（同时保留别名软链/文件在 dist/ 方便直接执行）
 build: build-plugin build-cli
 
 build-plugin:
-    go build -ldflags '{{ ldflags }}' -o bin/{{ plugin_name }} ./cmd/plugin
+    mkdir -p dist
+    go build -ldflags '{{ ldflags }}' -o dist/{{ plugin_name }} ./cmd/plugin
 
 build-cli:
-    go build -ldflags '{{ ldflags }}' -o bin/bao-acme ./cmd/bao-acme
+    mkdir -p dist
+    go build -ldflags '{{ ldflags }}' -o dist/bao-acme ./cmd/bao-acme
 
 # 单测（-race），离线
 test:
